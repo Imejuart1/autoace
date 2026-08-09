@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AutoAce Home</title>
-    <link rel="stylesheet" href="/styles.css?v=8" />
+    <link rel="stylesheet" href="/styles.css?v=9" />
   </head>
   <body>
     <div id="appRoot" class="page-shell app-root" hidden>
@@ -133,6 +133,11 @@
               </tbody>
             </table>
           </div>
+
+          <div class="actions results-actions">
+            <a id="downloadJsonButtonBottom" class="secondary download-link disabled" href="#" aria-disabled="true">Download JSON</a>
+            <a id="downloadCsvButtonBottom" class="secondary download-link disabled" href="#" aria-disabled="true">Download CSV</a>
+          </div>
         </section>
 
         <section class="panel validation-panel">
@@ -153,6 +158,6 @@
     </div>
 
     <pre id="debugDump" hidden></pre>
-    <script type="module" src="/app.mjs?v=10"></script>
+    <script type="module" src="/app.mjs?v=11"></script>
   </body>
 </html>

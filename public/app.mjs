@@ -44,6 +44,8 @@ const dom = {
   clearButton: document.getElementById("clearButton"),
   downloadJsonButton: document.getElementById("downloadJsonButton"),
   downloadCsvButton: document.getElementById("downloadCsvButton"),
+  downloadJsonButtonBottom: document.getElementById("downloadJsonButtonBottom"),
+  downloadCsvButtonBottom: document.getElementById("downloadCsvButtonBottom"),
   batchStatus: document.getElementById("batchStatus"),
   fileCount: document.getElementById("fileCount"),
   audioCount: document.getElementById("audioCount"),
@@ -239,6 +241,23 @@ function setProgress(label, value) {
   dom.progressBar.style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
 }
 
+function setDownloadLink(link, href, filename, enabled) {
+  if (!link) {
+    return;
+  }
+  link.href = enabled ? href : "#";
+  link.download = enabled ? filename : "";
+  link.setAttribute("aria-disabled", enabled ? "false" : "true");
+  link.classList.toggle("disabled", !enabled);
+}
+
+function syncDownloadLinks(hrefJson = "#", hrefCsv = "#", enabled = false) {
+  setDownloadLink(dom.downloadJsonButton, hrefJson, "predictions.json", enabled);
+  setDownloadLink(dom.downloadCsvButton, hrefCsv, "predictions.csv", enabled);
+  setDownloadLink(dom.downloadJsonButtonBottom, hrefJson, "predictions.json", enabled);
+  setDownloadLink(dom.downloadCsvButtonBottom, hrefCsv, "predictions.csv", enabled);
+}
+
 function setCounters() {
   dom.fileCount.textContent = String(state.sourceFiles.length);
   dom.audioCount.textContent = String(state.audioFiles.length);
@@ -267,14 +286,7 @@ function clearState(keepMessage = false) {
   dom.confusionMatrix.innerHTML = "";
   dom.opsSummary.innerHTML = "";
   dom.debugDump.textContent = "";
-  dom.downloadJsonButton.href = "#";
-  dom.downloadJsonButton.download = "";
-  dom.downloadJsonButton.setAttribute("aria-disabled", "true");
-  dom.downloadJsonButton.classList.add("disabled");
-  dom.downloadCsvButton.href = "#";
-  dom.downloadCsvButton.download = "";
-  dom.downloadCsvButton.setAttribute("aria-disabled", "true");
-  dom.downloadCsvButton.classList.add("disabled");
+  syncDownloadLinks();
   setProgress("Idle", 0);
   setStatus("Waiting for files");
   setCounters();
@@ -1350,14 +1362,7 @@ function buildDownloads(results) {
   const jsonUrl = URL.createObjectURL(new Blob([state.report.json], { type: "application/json" }));
   const csvUrl = URL.createObjectURL(new Blob([state.report.csv], { type: "text/csv" }));
   state.downloadUrls = [jsonUrl, csvUrl];
-  dom.downloadJsonButton.href = jsonUrl;
-  dom.downloadJsonButton.download = "predictions.json";
-  dom.downloadJsonButton.setAttribute("aria-disabled", "false");
-  dom.downloadJsonButton.classList.remove("disabled");
-  dom.downloadCsvButton.href = csvUrl;
-  dom.downloadCsvButton.download = "predictions.csv";
-  dom.downloadCsvButton.setAttribute("aria-disabled", "false");
-  dom.downloadCsvButton.classList.remove("disabled");
+  syncDownloadLinks(jsonUrl, csvUrl, true);
 }
 
 function downloadText(filename, text, type = "application/json") {
