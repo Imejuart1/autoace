@@ -1,0 +1,13 @@
+{
+  "name": "autoace-trial-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AutoAce voice tone and background noise trial dashboard",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

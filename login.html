@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoAce Login</title>
+    <link rel="stylesheet" href="./styles.css?v=7" />
+  </head>
+  <body>
+    <section id="authScreen" class="auth-screen" aria-labelledby="authTitle">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <img class="auth-logo" src="./assets/autoace-logo.png" alt="AutoAce logo" />
+          <div>
+            <p class="eyebrow">AutoAce AI</p>
+            <h1 id="authTitle">Secure dashboard access</h1>
+          </div>
+        </div>
+        <p class="auth-copy">
+          Sign in with the credentials AutoAce provides to review the batch dashboard and download results.
+        </p>
+        <form id="loginForm" class="auth-form">
+          <label class="field">
+            <span>Username</span>
+            <input id="loginUsername" type="text" autocomplete="username" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit" class="primary auth-submit">Sign in</button>
+          <p id="loginMessage" class="login-message" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+    </section>
+
+    <script type="module" src="./app.js?v=8"></script>
+  </body>
+</html>

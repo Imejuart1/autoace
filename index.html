@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoAce Home</title>
+    <link rel="stylesheet" href="./styles.css?v=7" />
+  </head>
+  <body>
+    <div id="appRoot" class="page-shell app-root" hidden>
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">AutoAce AI - Voice tone and background noise trial</p>
+          <h1>Batch review for production call audio</h1>
+          <p class="lede">
+            Upload a folder or ZIP, validate the manifest, run browser-side audio analysis, and download
+            structured predictions for each clip.
+          </p>
+          <div class="hero-chips">
+            <span>Supported: wav, ogg, mp3, m4a, flac, aac</span>
+            <span>Output: JSON and CSV</span>
+            <span>Cost-aware heuristic baseline</span>
+          </div>
+        </div>
+        <div class="hero-panel">
+          <div class="stat-card">
+            <label>Batch status</label>
+            <strong id="batchStatus">Waiting for files</strong>
+          </div>
+          <div class="stat-grid">
+            <div>
+              <label>Files</label>
+              <strong id="fileCount">0</strong>
+            </div>
+            <div>
+              <label>Valid audio</label>
+              <strong id="audioCount">0</strong>
+            </div>
+            <div>
+              <label>Manifest rows</label>
+              <strong id="manifestCount">0</strong>
+            </div>
+            <div>
+              <label>Errors</label>
+              <strong id="errorCount">0</strong>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button id="logoutButton" class="secondary" type="button">Sign out</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel upload-panel">
+          <div class="panel-head">
+            <h2>Upload batch</h2>
+            <p>Choose either a folder root or a ZIP archive that contains the audio files and labels.csv.</p>
+          </div>
+
+          <div class="upload-grid">
+            <label class="field">
+              <span>Folder upload</span>
+              <input id="folderInput" type="file" webkitdirectory multiple />
+            </label>
+
+            <label class="field">
+              <span>ZIP archive</span>
+              <input id="zipInput" type="file" accept=".zip,application/zip" />
+            </label>
+
+            <label class="field">
+              <span>Manifest CSV</span>
+              <input id="manifestInput" type="file" accept=".csv,text/csv" />
+            </label>
+          </div>
+
+          <div id="dropZone" class="drop-zone">
+            <div>
+              <strong>Drop files here</strong>
+              <p>Drag in the batch folder contents or a ZIP file. The app will auto-detect labels.csv when present.</p>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button id="analyzeButton" class="primary">Run analysis</button>
+            <button id="clearButton" class="secondary">Clear</button>
+            <a id="downloadJsonButton" class="secondary download-link disabled" href="#" aria-disabled="true">Download JSON</a>
+            <a id="downloadCsvButton" class="secondary download-link disabled" href="#" aria-disabled="true">Download CSV</a>
+          </div>
+
+          <div class="progress-wrap">
+            <div class="progress-meta">
+              <span id="progressLabel">Idle</span>
+              <span id="progressValue">0%</span>
+            </div>
+            <div class="progress-track">
+              <div id="progressBar" class="progress-fill"></div>
+            </div>
+          </div>
+
+          <div id="messages" class="messages"></div>
+        </section>
+
+        <section class="panel results-panel">
+          <div class="panel-head">
+            <h2>Results</h2>
+            <p>Each row preserves the original filename and shows the structured prediction for that clip.</p>
+          </div>
+
+          <div id="summaryCards" class="summary-cards"></div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>Tone</th>
+                  <th>Intensity</th>
+                  <th>Noise</th>
+                  <th>Noise type</th>
+                  <th>Quality</th>
+                  <th>Overlap</th>
+                  <th>Silence</th>
+                  <th>Confidence</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="resultsBody">
+                <tr>
+                  <td colspan="10" class="empty-state">No analysis run yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel validation-panel">
+          <div class="panel-head">
+            <h2>Validation</h2>
+            <p>When ground-truth labels are present, the dashboard computes tone confusion and field accuracy.</p>
+          </div>
+
+          <div id="validationSummary" class="summary-cards"></div>
+          <div id="confusionMatrix" class="matrix-wrap"></div>
+          <div class="panel-head ops-head">
+            <h2>Operations</h2>
+            <p>Measured runtime and cost assumptions for the current batch.</p>
+          </div>
+          <div id="opsSummary" class="summary-cards"></div>
+        </section>
+      </main>
+    </div>
+
+    <pre id="debugDump" hidden></pre>
+    <script type="module" src="./app.js?v=8"></script>
+  </body>
+</html>
