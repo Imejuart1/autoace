@@ -54,6 +54,7 @@ const dom = {
   progressBar: document.getElementById("progressBar"),
   messages: document.getElementById("messages"),
   resultsBody: document.getElementById("resultsBody"),
+  resultsPanel: document.querySelector(".results-panel"),
   summaryCards: document.getElementById("summaryCards"),
   validationSummary: document.getElementById("validationSummary"),
   confusionMatrix: document.getElementById("confusionMatrix"),
@@ -218,6 +219,18 @@ function setMessage(html) {
 function setStatus(text, kind = "info") {
   dom.batchStatus.textContent = text;
   dom.batchStatus.dataset.kind = kind;
+}
+
+function scrollToResultsPanel() {
+  if (!dom.resultsPanel) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    dom.resultsPanel.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
 }
 
 function setProgress(label, value) {
@@ -1595,6 +1608,7 @@ async function analyzeBatch() {
     );
     setStatus("Analysis complete", "success");
     setProgress("Done", 1);
+    scrollToResultsPanel();
   } catch (error) {
     setStatus("Analysis failed", "error");
     setMessage(

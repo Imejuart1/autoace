@@ -16,6 +16,7 @@ const sessions = new Map();
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "application/javascript; charset=utf-8"],
+  [".mjs", "application/javascript; charset=utf-8"],
   [".css", "text/css; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".csv", "text/csv; charset=utf-8"],
@@ -147,7 +148,8 @@ function hasPublicFile(requestPath) {
   return (
     requestPath === "/index.html" ||
     requestPath === "/login.html" ||
-    requestPath === "/app.js" ||
+    requestPath === "/app.mjs" ||
+    requestPath === "/login.mjs" ||
     requestPath === "/styles.css" ||
     requestPath === "/README.md" ||
     requestPath === "/TECHNICAL_MEMO.md" ||
@@ -165,9 +167,13 @@ function resolveStaticFile(requestPath) {
   }
 
   if (hasPublicFile(normalized)) {
-    const candidate = path.resolve(ROOT, `.${normalized}`);
-    if (candidate.startsWith(ROOT)) {
-      return candidate;
+    const publicCandidate = path.resolve(ROOT, `./public${normalized}`);
+    if (fs.existsSync(publicCandidate)) {
+      return publicCandidate;
+    }
+    const rootCandidate = path.resolve(ROOT, `.${normalized}`);
+    if (rootCandidate.startsWith(ROOT)) {
+      return rootCandidate;
     }
   }
 
