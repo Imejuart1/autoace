@@ -1240,10 +1240,12 @@ function fuseTonePrediction(baseline, metrics, modelEvidence) {
         : tone === "distressed"
           ? Math.max(sad, ang * 0.65)
           : ang;
+
+  // Normalized weights (0.75 baseline + 0.25 model = 1.0) to prevent artificial score dropping
   const confidence = clamp(
-    baseline.confidence * 0.66 + modelEvidence.confidence * 0.22 + (modelSupport >= 0.5 ? 0.07 : -0.05),
+    (baseline.confidence * 0.75) + (modelEvidence.confidence * 0.25) + (modelSupport >= 0.5 ? 0.05 : -0.10),
     0.32,
-    0.95,
+    0.99,
   );
 
   return {
@@ -1331,11 +1333,12 @@ function renderResults(results) {
       const prediction = row.prediction || {};
       return `
         <tr>
-          <td><span class="cell-label">Filename</span><span class="cell-value">${row.name}</span></td>
+          <td><span class="cell-label">Filename</span><span class="cell-value" style="display: inline-block; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${row.name}">${row.name}</span></td>
           <td><span class="cell-label">Tone</span><span class="cell-value"><span class="tone-pill">${prediction.emotional_tone || "-"}</span></span></td>
           <td><span class="cell-label">Intensity</span><span class="cell-value">${prediction.emotional_intensity || "-"}</span></td>
           <td><span class="cell-label">Noise</span><span class="cell-value">${prediction.background_noise_present === undefined ? "-" : String(prediction.background_noise_present)}</span></td>
           <td><span class="cell-label">Noise type</span><span class="cell-value">${prediction.background_noise_type || ""}</span></td>
+          <td><span class="cell-label">Noise severity</span><span class="cell-value">${prediction.background_noise_severity || "-"}</span></td>
           <td><span class="cell-label">Quality</span><span class="cell-value">${prediction.audio_quality || "-"}</span></td>
           <td><span class="cell-label">Overlap</span><span class="cell-value">${prediction.speaker_overlap_present === undefined ? "-" : String(prediction.speaker_overlap_present)}</span></td>
           <td><span class="cell-label">Silence</span><span class="cell-value">${prediction.long_silence_present === undefined ? "-" : String(prediction.long_silence_present)}</span></td>
