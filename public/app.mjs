@@ -676,10 +676,10 @@ function detectNoiseType({
   pitchCount,
 }) {
   if (speechSegmentCount > 250 || noiseFloor > 0.0008) {
-    return "static";
+    return "sharp static";
   }
   if (speechSegmentCount > 80 && midFreqRatio > 0.45) {
-    return "television";
+    return "TV";
   }
   if (lowFreqRatio > 0.48 && flatness > 0.42) {
     return "road noise";
