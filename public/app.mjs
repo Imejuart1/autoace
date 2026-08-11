@@ -1215,6 +1215,7 @@ function fuseTonePrediction(baseline, metrics, modelEvidence) {
   const { neu, ang, hap, sad } = modelEvidence.labels;
   const reliable = modelEvidence.confidence >= 0.58 && modelEvidence.margin >= 0.1;
   const elevatedStress = metrics.speechEnergy > 0.055 || metrics.pitchStd > 42 || metrics.clipRate > 0.012;
+  const strongDistressEvidence = sad >= 0.9 && modelEvidence.margin >= 0.65;
   let tone = baseline.emotional_tone;
   let intensity = baseline.emotional_intensity;
 
@@ -1224,12 +1225,18 @@ function fuseTonePrediction(baseline, metrics, modelEvidence) {
   } else if (reliable && ang > neu && ang > hap && ang > sad) {
     tone = modelEvidence.confidence > 0.75 && elevatedStress ? "upset" : "frustrated";
     intensity = tone === "upset" ? "high" : "medium";
+  } else if (
+    reliable &&
+    sad > neu &&
+    sad > ang &&
+    sad > hap &&
+    (baseline.emotional_tone === "distressed" || strongDistressEvidence)
+  ) {
+    tone = "distressed";
+    intensity = "high";
   } else if (reliable && neu > ang && neu > hap && neu > sad && baseline.emotional_tone !== "distressed") {
     tone = "neutral";
     intensity = baseline.emotional_intensity === "high" ? "medium" : baseline.emotional_intensity;
-  } else if (reliable && sad > neu && sad > ang && sad > hap && baseline.emotional_tone === "distressed") {
-    tone = "distressed";
-    intensity = "high";
   }
 
   const modelSupport =
