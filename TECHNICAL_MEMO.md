@@ -6,7 +6,7 @@ Build a practical system that can classify emotional tone and background noise i
 
 ## Approaches Tested
 
-I worked through two iterations of the same browser-side acoustic approach:
+I worked through three stages:
 
 1. A simple baseline using energy, pitch, and pause thresholds.
 2. A refined hybrid heuristic that added:
@@ -15,16 +15,19 @@ I worked through two iterations of the same browser-side acoustic approach:
    - spectral-band balance
    - transient noise cues
    - overlap proxies
+3. A hybrid model path that combines the acoustic baseline with Vercel-hosted pretrained Wav2Vec2 emotion evidence from Transformers.js.
 
-The second version was kept because it matched the labeled sample calls better and stayed fully local, which preserves privacy and keeps inference cost essentially zero.
+The hybrid architecture retains the deterministic checks for audio quality, overlap, silence, and noise while using the pretrained model only as high-confidence tone evidence. This preserves privacy and keeps model-inference cost effectively zero when self-hosted.
 
 ## Final Architecture
 
-- A lightweight Node server handles the hosted dashboard shell and login.
+- The hosted dashboard runs entirely on Vercel.
 - The dashboard is protected by a real session cookie and shared credentials.
 - The manifest CSV is validated in-browser.
 - Audio is decoded client-side and converted to mono samples.
 - Short-frame waveform and spectral features are extracted.
+- High-energy 18-second audio segments are resampled to 16 kHz and sent to the `/api/tone` endpoint, which runs a Transformers.js emotion classifier in the Vercel Node runtime.
+- The model's four broad outputs (`neutral`, `angry`, `happy`, `sad`) are fused conservatively with the acoustic baseline to produce the required AutoAce tone labels.
 - Deterministic rules produce the required output schema:
   - emotional tone
   - emotional intensity
@@ -56,9 +59,9 @@ Confusion matrix:
 
 ## Cost Analysis
 
-- Current inference path uses no paid external API.
+- The hybrid inference path uses no paid external API.
 - Estimated model-inference cost: `$0.0000` per audio minute.
-- Assumption: audio is processed locally in the browser and the dashboard is served by a self-hosted Node server with session-based login.
+- Assumption: the dashboard and model inference both run inside Vercel, with the model downloaded on first use and cached by the runtime.
 - This remains comfortably below the `$0.003` per audio minute ceiling.
 
 ## Latency Analysis
@@ -70,18 +73,19 @@ Measured on the three labeled sample calls:
 - Throughput: about `3.35 s` per audio minute
 - Equivalent speed: about `17.9x` real time on this machine
 
-The current runtime is dominated by client-side decoding and feature extraction. Because the pipeline is deterministic and local, latency scales predictably with batch size.
+The baseline runtime is dominated by client-side decoding and feature extraction. The hybrid model adds CPU inference time per selected 18-second segment; measure this separately in the Vercel runtime after deployment.
 
 ## Failure Modes and Limitations
 
 - The system can still confuse neutral and satisfied speech when pitch and speech energy are similar.
 - Background-noise labels are heuristic and can overfit to spectral patterns that are not truly semantic noise categories.
 - Long-silence detection can be brittle on very long recordings with natural pauses.
-- The current classifier is intentionally lightweight, so it will not match a well-trained supervised model on a larger labeled corpus.
+- The pretrained emotion model was trained on broad IEMOCAP emotions rather than the AutoAce label taxonomy. It should be calibrated on a larger dealership-call set before reporting generalization claims.
+- Customer-only tone requires diarization or speaker-role identification; the current implementation does not yet isolate the customer from other speakers.
 
 ## Next Steps
 
-1. Replace the heuristics with a supervised audio model once more labeled data is available.
-2. Compare the current deterministic baseline against a learned acoustic classifier on grouped validation folds.
-3. Deploy the Node server to a persistent hosted environment for the evaluation window.
-4. Revisit confidence calibration once a larger validation set exists.
+1. Measure the hybrid model against the three provided labeled calls and preserve only changes that improve leave-one-call-out behavior.
+2. Collect additional dealer-call labels and calibrate the five-class mapping on grouped validation folds.
+3. Add speaker diarization to isolate the customer before tone scoring.
+4. Keep the full stack on Vercel and refine the model-label calibration as more data becomes available.

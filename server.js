@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { forwardToneRequest } = require("./model_proxy");
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 3000);
@@ -329,6 +330,25 @@ function handleLogout(req, res) {
   );
 }
 
+async function handleTone(req, res) {
+  if (!getSessionFromRequest(req)) {
+    sendJson(res, 401, { error: "Authentication required." });
+    return;
+  }
+
+  const bodyText = await readRequestBody(req);
+  let payload;
+  try {
+    payload = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    sendJson(res, 400, { error: "Request body must be valid JSON." });
+    return;
+  }
+
+  const response = await forwardToneRequest(payload);
+  sendJson(res, response.status, response.payload);
+}
+
 const server = http.createServer((req, res) => {
   clearExpiredSessions();
 
@@ -348,6 +368,13 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/logout" && req.method === "POST") {
     handleLogout(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/tone" && req.method === "POST") {
+    handleTone(req, res).catch((error) => {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : "Tone analysis failed." });
+    });
     return;
   }
 

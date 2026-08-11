@@ -14,6 +14,10 @@ const INTENSITY_LABELS = ["low", "medium", "high"];
 const NOISE_SEVERITY_LABELS = ["none", "low", "medium", "high"];
 const QUALITY_LABELS = ["clear", "slightly_impaired", "severely_impaired"];
 const SAMPLE_FREQUENCIES = [120, 240, 360, 480, 600, 800, 1200, 1600, 2400, 3200, 4000];
+const TONE_MODEL_ENDPOINT = "/api/tone";
+const TONE_MODEL_SAMPLE_RATE = 16000;
+const TONE_MODEL_SEGMENT_SECONDS = 18;
+const TONE_MODEL_MAX_SEGMENTS = 5;
 
 const state = {
   sourceFiles: [],
@@ -26,6 +30,10 @@ const state = {
   report: null,
   downloadUrls: [],
   analysisTiming: null,
+  toneModel: {
+    status: "unknown",
+    reason: "",
+  },
 };
 
 const dom = {
@@ -36,6 +44,7 @@ const dom = {
   loginPassword: document.getElementById("loginPassword"),
   loginMessage: document.getElementById("loginMessage"),
   logoutButton: document.getElementById("logoutButton"),
+  singleAudioInput: document.getElementById("singleAudioInput"),
   folderInput: document.getElementById("folderInput"),
   zipInput: document.getElementById("zipInput"),
   manifestInput: document.getElementById("manifestInput"),
@@ -280,6 +289,7 @@ function clearState(keepMessage = false) {
   state.report = null;
   state.downloadUrls = [];
   state.analysisTiming = null;
+  state.toneModel = { status: "unknown", reason: "" };
   dom.resultsBody.innerHTML = '<tr><td colspan="10" class="empty-state">No analysis run yet.</td></tr>';
   dom.summaryCards.innerHTML = "";
   dom.validationSummary.innerHTML = "";
@@ -291,7 +301,7 @@ function clearState(keepMessage = false) {
   setStatus("Waiting for files");
   setCounters();
   if (!keepMessage) {
-    setMessage("Ready. Select a folder or ZIP archive and a manifest CSV, then run the analysis.");
+    setMessage("Ready. Select a folder, ZIP archive, or a single audio file, then run the analysis.");
   }
 }
 
@@ -1057,6 +1067,193 @@ function toMonoArray(audioBuffer) {
   return mono;
 }
 
+function resampleAudio(samples, sourceRate, targetRate) {
+  if (sourceRate === targetRate) {
+    return samples;
+  }
+
+  const targetLength = Math.max(1, Math.round((samples.length * targetRate) / sourceRate));
+  const output = new Float32Array(targetLength);
+  const ratio = sourceRate / targetRate;
+
+  for (let index = 0; index < targetLength; index += 1) {
+    const position = index * ratio;
+    const leftIndex = Math.floor(position);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const fraction = position - leftIndex;
+    output[index] = samples[leftIndex] * (1 - fraction) + samples[rightIndex] * fraction;
+  }
+
+  return output;
+}
+
+function encodePcm16Base64(samples) {
+  const bytes = new Uint8Array(samples.length * 2);
+  const view = new DataView(bytes.buffer);
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = Math.max(-1, Math.min(1, samples[index]));
+    view.setInt16(index * 2, Math.round(value * 32767), true);
+  }
+
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+function selectToneModelSegments(samples, sampleRate) {
+  const segmentLength = Math.max(1, Math.round(sampleRate * TONE_MODEL_SEGMENT_SECONDS));
+  const candidates = [];
+
+  for (let start = 0; start < samples.length; start += segmentLength) {
+    const segment = samples.subarray(start, Math.min(samples.length, start + segmentLength));
+    if (segment.length < sampleRate) {
+      continue;
+    }
+    candidates.push({
+      start,
+      samples: segment,
+      energy: computeRms(segment),
+    });
+  }
+
+  const audible = candidates.filter((candidate) => candidate.energy >= 0.004);
+  const selectionPool = audible.length ? audible : candidates;
+  return selectionPool
+    .sort((left, right) => right.energy - left.energy)
+    .slice(0, TONE_MODEL_MAX_SEGMENTS)
+    .sort((left, right) => left.start - right.start);
+}
+
+function isToneModelResponse(payload) {
+  return (
+    payload &&
+    payload.labels &&
+    ["neu", "ang", "hap", "sad"].every((label) => typeof payload.labels[label] === "number")
+  );
+}
+
+async function requestToneModel(segment, sampleRate) {
+  const response = await fetch(TONE_MODEL_ENDPOINT, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sample_rate: sampleRate,
+      pcm16_base64: encodePcm16Base64(segment),
+      duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
+    }),
+  });
+
+  const payload = await readJsonResponse(response);
+  if (response.status === 503) {
+    state.toneModel.status = "unavailable";
+    state.toneModel.reason = payload?.error || payload?.detail || "Pretrained tone model is unavailable.";
+    return null;
+  }
+  if (!response.ok || !isToneModelResponse(payload)) {
+    throw new Error(payload?.error || payload?.detail || "Pretrained tone model returned an invalid response.");
+  }
+
+  state.toneModel.status = "active";
+  return payload;
+}
+
+async function analyzePretrainedTone(samples, sampleRate) {
+  if (state.toneModel.status === "unavailable") {
+    return null;
+  }
+
+  const resampled = resampleAudio(samples, sampleRate, TONE_MODEL_SAMPLE_RATE);
+  const segments = selectToneModelSegments(resampled, TONE_MODEL_SAMPLE_RATE);
+  if (!segments.length) {
+    return null;
+  }
+
+  const combined = { neu: 0, ang: 0, hap: 0, sad: 0 };
+  let totalWeight = 0;
+  let modelName = "";
+
+  for (const segment of segments) {
+    const prediction = await requestToneModel(segment.samples, TONE_MODEL_SAMPLE_RATE);
+    if (!prediction) {
+      return null;
+    }
+    const weight = Math.max(0.01, segment.energy * segment.samples.length);
+    totalWeight += weight;
+    modelName = prediction.model || modelName;
+    for (const label of Object.keys(combined)) {
+      combined[label] += prediction.labels[label] * weight;
+    }
+  }
+
+  for (const label of Object.keys(combined)) {
+    combined[label] /= Math.max(totalWeight, 1e-12);
+  }
+  const ordered = Object.entries(combined).sort((left, right) => right[1] - left[1]);
+
+  return {
+    model: modelName,
+    labels: combined,
+    confidence: ordered[0][1],
+    margin: ordered[0][1] - ordered[1][1],
+    segments: segments.length,
+  };
+}
+
+function fuseTonePrediction(baseline, metrics, modelEvidence) {
+  if (!modelEvidence) {
+    return baseline;
+  }
+
+  const { neu, ang, hap, sad } = modelEvidence.labels;
+  const reliable = modelEvidence.confidence >= 0.58 && modelEvidence.margin >= 0.1;
+  const elevatedStress = metrics.speechEnergy > 0.055 || metrics.pitchStd > 42 || metrics.clipRate > 0.012;
+  let tone = baseline.emotional_tone;
+  let intensity = baseline.emotional_intensity;
+
+  if (reliable && hap > neu && hap > ang && hap > sad) {
+    tone = "satisfied";
+    intensity = modelEvidence.confidence > 0.82 ? "high" : "medium";
+  } else if (reliable && ang > neu && ang > hap && ang > sad) {
+    tone = modelEvidence.confidence > 0.75 && elevatedStress ? "upset" : "frustrated";
+    intensity = tone === "upset" ? "high" : "medium";
+  } else if (reliable && neu > ang && neu > hap && neu > sad && baseline.emotional_tone !== "distressed") {
+    tone = "neutral";
+    intensity = baseline.emotional_intensity === "high" ? "medium" : baseline.emotional_intensity;
+  } else if (reliable && sad > neu && sad > ang && sad > hap && baseline.emotional_tone === "distressed") {
+    tone = "distressed";
+    intensity = "high";
+  }
+
+  const modelSupport =
+    tone === "satisfied"
+      ? hap
+      : tone === "neutral"
+        ? neu
+        : tone === "distressed"
+          ? Math.max(sad, ang * 0.65)
+          : ang;
+  const confidence = clamp(
+    baseline.confidence * 0.66 + modelEvidence.confidence * 0.22 + (modelSupport >= 0.5 ? 0.07 : -0.05),
+    0.32,
+    0.95,
+  );
+
+  return {
+    ...baseline,
+    emotional_tone: tone,
+    emotional_intensity: intensity,
+    confidence: Number(confidence.toFixed(2)),
+  };
+}
+
 function parseGroundTruthJson(text) {
   if (!text || !String(text).trim()) {
     return null;
@@ -1289,6 +1486,7 @@ function renderOperationalSummary() {
   const costPerMinute = 0;
 
   const cards = [
+    ["Tone engine", state.toneModel.status === "active" ? "Hybrid pretrained model" : "Acoustic fallback"],
     ["Audio minutes", audioMinutes.toFixed(2)],
     ["Wall time", `${wallSeconds.toFixed(2)} s`],
     ["Seconds per audio minute", secondsPerAudioMinute.toFixed(2)],
@@ -1414,6 +1612,7 @@ async function collectDirectoryEntry(entry) {
 
 async function loadFilesFromInputs() {
   const manualFiles = [
+    ...Array.from(dom.singleAudioInput.files || []),
     ...Array.from(dom.folderInput.files || []),
     ...Array.from(dom.zipInput.files || []),
     ...Array.from(dom.manifestInput.files || []),
@@ -1504,14 +1703,8 @@ async function analyzeBatch() {
   }
   state.processing = true;
   dom.analyzeButton.disabled = true;
-  dom.downloadJsonButton.href = "#";
-  dom.downloadJsonButton.download = "";
-  dom.downloadJsonButton.setAttribute("aria-disabled", "true");
-  dom.downloadJsonButton.classList.add("disabled");
-  dom.downloadCsvButton.href = "#";
-  dom.downloadCsvButton.download = "";
-  dom.downloadCsvButton.setAttribute("aria-disabled", "true");
-  dom.downloadCsvButton.classList.add("disabled");
+  syncDownloadLinks();
+  state.toneModel = { status: "unknown", reason: "" };
   setProgress("Preparing batch", 0.02);
   setStatus("Preparing batch", "info");
   setMessage("Reading uploaded files and validating the manifest...");
@@ -1527,7 +1720,7 @@ async function analyzeBatch() {
     setCounters();
 
     if (!audioEntries.length) {
-      throw new Error("No supported audio files found. Please upload a folder or ZIP that contains audio clips.");
+      throw new Error("No supported audio files found. Please upload a folder, ZIP, or single audio clip.");
     }
 
     const results = [];
@@ -1567,7 +1760,13 @@ async function analyzeBatch() {
         const audioBuffer = await decodeAudioBuffer(entry.file);
         totalAudioSeconds += audioBuffer.duration || 0;
         const monoSamples = toMonoArray(audioBuffer);
-        const { result, metrics } = analyzeSamples(monoSamples, audioBuffer.sampleRate);
+        const { result: baselineResult, metrics } = analyzeSamples(monoSamples, audioBuffer.sampleRate);
+        const modelEvidence = await analyzePretrainedTone(monoSamples, audioBuffer.sampleRate);
+        const result = fuseTonePrediction(baselineResult, metrics, modelEvidence);
+        metrics.pretrainedTone = modelEvidence || {
+          available: false,
+          reason: state.toneModel.reason || "Pretrained tone model was not used.",
+        };
         const truth = manifestRow ? parseGroundTruthJson(manifestRow.result_json) : null;
         results.push({
           name: normalizeName(entry.name),
@@ -1605,9 +1804,13 @@ async function analyzeBatch() {
 
     const okCount = results.filter((row) => row.status === "ok").length;
     const errorCount = results.filter((row) => row.status !== "ok").length;
+    const toneEngineMessage =
+      state.toneModel.status === "active"
+        ? " Pretrained tone model blended with acoustic checks."
+        : " Pretrained tone model was unavailable, so acoustic baseline results were used.";
     setMessage(
       `
-        <div class="success">Analysis complete. ${okCount} file(s) processed successfully.</div>
+        <div class="success">Analysis complete. ${okCount} file(s) processed successfully.${toneEngineMessage}</div>
         ${errorCount ? `<div class="error">${errorCount} file(s) failed and were kept out of the downloadable prediction files.</div>` : ""}
       `,
     );
@@ -1633,10 +1836,15 @@ async function analyzeBatch() {
 
 function hookInputs() {
   const resetOtherInputs = (source) => {
+    if (source !== dom.singleAudioInput) dom.singleAudioInput.value = "";
     if (source !== dom.folderInput) dom.folderInput.value = "";
     if (source !== dom.zipInput) dom.zipInput.value = "";
-    if (source !== dom.manifestInput) dom.manifestInput.value = dom.manifestInput.value;
   };
+
+  dom.singleAudioInput.addEventListener("change", () => {
+    resetOtherInputs(dom.singleAudioInput);
+    setMessage("Single audio selected. The app will process it as a one-item batch when you run analysis.");
+  });
 
   dom.folderInput.addEventListener("change", () => {
     resetOtherInputs(dom.folderInput);
@@ -1655,6 +1863,7 @@ function hookInputs() {
   dom.analyzeButton.addEventListener("click", analyzeBatch);
 
   dom.clearButton.addEventListener("click", () => {
+    dom.singleAudioInput.value = "";
     dom.folderInput.value = "";
     dom.zipInput.value = "";
     dom.manifestInput.value = "";
@@ -1682,17 +1891,25 @@ function hookInputs() {
     for (const file of files) {
       dataTransfer.items.add(file);
     }
-    dom.folderInput.files = dataTransfer.files;
+    if (files.length === 1 && isAudioFile(files[0])) {
+      dom.singleAudioInput.files = dataTransfer.files;
+    } else {
+      dom.folderInput.files = dataTransfer.files;
+    }
     dom.zipInput.value = "";
     dom.manifestInput.value = "";
-    setMessage(`Dropped ${files.length} file(s). The folder input has been populated.`);
+    setMessage(
+      files.length === 1 && isAudioFile(files[0])
+        ? "Dropped one audio file. The single-file input has been populated."
+        : `Dropped ${files.length} file(s). The folder input has been populated.`,
+    );
   });
 }
 
 function applyInitialMessage() {
   setMessage(
     [
-      "Start with the three labeled sample calls if you have them, or use the dashboard on a new evaluation folder.",
+      "Start with the three labeled sample calls if you have them, or test a single audio file from the one-item upload path.",
       "The app validates the manifest, analyzes each audio file independently, and keeps failures isolated to the affected row.",
       "If a ZIP uses standard deflate compression, it is unpacked in-browser without extra dependencies.",
     ]

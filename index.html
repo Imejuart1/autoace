@@ -4,17 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AutoAce Home</title>
-    <link rel="stylesheet" href="/styles.css?v=9" />
+    <link rel="stylesheet" href="/styles.css?v=10" />
   </head>
   <body>
     <div id="appRoot" class="page-shell app-root" hidden>
       <header class="hero">
         <div class="hero-copy">
+          <div class="hero-brand">
+            <img class="hero-logo" src="/assets/autoace-logo.png" alt="AutoAce logo" />
+            <div>
+              <p class="hero-brand-label">AutoAce AI</p>
+              <p class="hero-brand-subtitle">Voice tone and background noise trial</p>
+            </div>
+          </div>
           <p class="eyebrow">AutoAce AI - Voice tone and background noise trial</p>
           <h1>Batch review for production call audio</h1>
           <p class="lede">
-            Upload a folder or ZIP, validate the manifest, run browser-side audio analysis, and download
-            structured predictions for each clip.
+            Upload a folder, ZIP, or single audio file, validate the manifest, run browser-side audio
+            analysis, and download structured predictions for each clip.
           </p>
           <div class="hero-chips">
             <span>Supported: wav, ogg, mp3, m4a, flac, aac</span>
@@ -55,10 +62,15 @@
         <section class="panel upload-panel">
           <div class="panel-head">
             <h2>Upload batch</h2>
-            <p>Choose either a folder root or a ZIP archive that contains the audio files and labels.csv.</p>
+            <p>Choose either a folder root, a ZIP archive, or a single audio file. Add labels.csv when you have it.</p>
           </div>
 
           <div class="upload-grid">
+            <label class="field">
+              <span>Single audio file</span>
+              <input id="singleAudioInput" type="file" accept=".wav,.ogg,.mp3,.m4a,.flac,.aac,.webm,.opus,audio/*" />
+            </label>
+
             <label class="field">
               <span>Folder upload</span>
               <input id="folderInput" type="file" webkitdirectory multiple />
@@ -158,6 +170,6 @@
     </div>
 
     <pre id="debugDump" hidden></pre>
-    <script type="module" src="/app.mjs?v=11"></script>
+    <script type="module" src="/app.mjs?v=13"></script>
   </body>
 </html>

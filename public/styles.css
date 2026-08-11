@@ -133,6 +133,41 @@ body {
   border-radius: 30px;
 }
 
+.hero-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.hero-logo {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #eaf2fb;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.28);
+  flex: none;
+}
+
+.hero-brand-label {
+  margin: 0;
+  color: var(--accent-2);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.hero-brand-subtitle {
+  margin: 4px 0 0;
+  color: #c6d4eb;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
 .hero-panel {
   padding: clamp(18px, 2.1vw, 22px);
   border-radius: 30px;
@@ -629,6 +664,15 @@ tbody tr:nth-child(2n) td {
 }
 
 @media (max-width: 720px) {
+  .hero-brand {
+    align-items: flex-start;
+  }
+
+  .hero-logo {
+    width: 54px;
+    height: 54px;
+  }
+
   body {
     padding: 12px;
   }

@@ -1,13 +1,14 @@
 # AutoAce Trial Dashboard
 
-This repository now contains a zero-dependency browser dashboard for the AutoAce voice-tone and background-noise technical trial.
+This repository contains a hosted dashboard for the AutoAce voice-tone and background-noise technical trial. It uses browser-side acoustic checks plus a Vercel-hosted pretrained emotion model for tone evidence.
 
 ## What is included
 
 - Folder upload support through `webkitdirectory`
 - ZIP upload support for standard stored or deflate-compressed archives
 - Manifest validation against `labels.csv`
-- Browser-side audio decoding and heuristic feature extraction
+- Browser-side audio decoding and acoustic feature extraction
+- Vercel-hosted Wav2Vec2 emotion-model evidence blended with the acoustic baseline
 - Predictions download as CSV and JSON
 - Validation summary and confusion matrix when ground truth is present
 - Runtime and cost summary for each processed batch
@@ -21,6 +22,16 @@ npm start
 ```
 
 2. Visit `http://localhost:3000/login`.
+
+### Hosted inference on Vercel
+
+The hosted deployment keeps everything inside one Vercel project:
+
+- the dashboard UI
+- login/session handling
+- the tone inference endpoint at `/api/tone`
+
+The model runs in Vercel's Node runtime using `@huggingface/transformers`, so no separate Python service is required for the hosted submission.
 
 ## Routes
 
@@ -45,9 +56,10 @@ If you prefer, you can also run `node server.js` directly.
 
 ## Notes on the current model
 
-- The current implementation is a browser-native heuristic baseline.
-- It estimates tone, noise, overlap, silence, and audio quality from decoded waveform features.
-- That keeps the app fast, cheap, and self-contained while we continue iterating on better modeling once more labeled audio is available.
+- The acoustic baseline estimates tone, noise, overlap, silence, and quality from decoded waveform features.
+- The hosted tone model runs `onnx-community/wav2vec2-emotion-recognition-ONNX` on selected 16 kHz speech segments and blends high-confidence `neutral`, `angry`, `happy`, and `sad` evidence with the baseline.
+- The model is downloaded on first use and cached by the Vercel runtime; production-call audio is sent only to the model endpoint, not to an LLM or paid API.
+- The emotion model is evidence, not ground truth: it was trained on four broad IEMOCAP classes, so the app retains rule-based safeguards for the five AutoAce labels.
 
 ## Measured batch performance
 
@@ -58,6 +70,5 @@ If you prefer, you can also run `node server.js` directly.
 
 ## Next improvements
 
-- Swap the heuristic classifier for a supervised acoustic model once the labeled audio set is available locally.
-- Deploy the Node server to a hosted environment so AutoAce can access it with shared credentials.
-- Add richer ZIP parsing and progress streaming if the batch sizes grow.
+- Calibrate the model-label mapping on a larger dealership-call set.
+- Add diarization or speaker-role detection after collecting more overlap examples.

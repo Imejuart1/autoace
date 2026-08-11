@@ -1,2 +1,6 @@
 .vercel
 .env
+.model-cache/
+deps/
+tmp/
+node_modules/
