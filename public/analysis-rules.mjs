@@ -122,34 +122,34 @@ export function detectSpeakerOverlap({
   };
 
   const monoScore = clamp01(
-    scale(segmentDensity, 1.05, 2.7) * 0.18 +
-      scale(pitchStd, 16, 45) * 0.16 +
-      scale(meanSpeechZcr, 0.018, 0.055) * 0.14 +
-      scale(speechRatio, 0.42, 0.86) * 0.16 +
-      scale(voicedPitchRatio, 0.22, 0.62) * 0.12 +
-      scale(transientRate, 0.008, 0.04) * 0.08 +
-      scale(1 - clamp01(pitchConfidenceMean ?? 0.5), 0.18, 0.65) * 0.08 +
-      scale(harmonicity, 0.04, 0.16) * 0.08,
+    scale(segmentDensity, 1.3, 2.7) * 0.2 +
+      scale(pitchStd, 20, 48) * 0.18 +
+      scale(meanSpeechZcr, 0.024, 0.058) * 0.16 +
+      scale(speechRatio, 0.5, 0.86) * 0.14 +
+      scale(voicedPitchRatio, 0.26, 0.66) * 0.12 +
+      scale(transientRate, 0.012, 0.045) * 0.1 +
+      scale(1 - clamp01(pitchConfidenceMean ?? 0.5), 0.22, 0.66) * 0.1,
   );
 
   const crowdedMonoSpeech =
-    segmentDensity > 1.65 &&
+    segmentDensity > 1.8 &&
     speechRatio > 0.58 &&
-    pitchStd > 24 &&
-    meanSpeechZcr > 0.025 &&
-    voicedPitchRatio > 0.32;
+    pitchStd > 28 &&
+    meanSpeechZcr > 0.032 &&
+    voicedPitchRatio > 0.34;
   const unstablePitchTracking =
     typeof pitchConfidenceMean === "number" &&
-    pitchConfidenceMean < 0.46 &&
+    pitchConfidenceMean < 0.38 &&
     speechRatio > 0.5 &&
-    pitchStd > 20 &&
-    meanSpeechZcr > 0.02;
+    pitchStd > 24 &&
+    meanSpeechZcr > 0.026 &&
+    transientRate > 0.012;
   const sustainedComplexVoicing =
-    harmonicity > 0.09 &&
-    pitchStd > 28 &&
+    pitchStd > 34 &&
     speechRatio > 0.62 &&
-    transientRate > 0.02 &&
-    voicedPitchRatio > 0.28;
+    transientRate > 0.025 &&
+    voicedPitchRatio > 0.32 &&
+    harmonicity > 0.08;
 
   const stereoScore =
     channelCount >= 2 && !dualMono
@@ -166,14 +166,30 @@ export function detectSpeakerOverlap({
     channelCorrelation < 0.88 &&
     (channelEnergyImbalance > 0.12 || transientRate > 0.02 || segmentDensity > 1.1);
 
-  return (
+  const trueMonoOverlap = 
+    monoScore >= 0.52 &&           // Lowered from 0.55 to catch your 0.52-0.54 logs
+    pitchConfidenceMean >= 0.40 && // Still rejecting TV noise
+    transientRate <= 0.025 &&      // Still rejecting mechanical/yelling
+    pitchStd > 20 &&               // Still requiring distinct pitch variance
+    voicedPitchRatio > 0.25;       // Still ensuring it is human speech      
+
+  // ADD THIS LOG STATEMENT TO EXPOSE THE GUESSWORK
+  console.log("[Overlap Debug]", {
+    stereoStrong,
+    stereoScore: Number(stereoScore.toFixed(3)),
+    monoScore: Number(monoScore.toFixed(3)),
+    pitchConfidenceMean: pitchConfidenceMean !== undefined ? Number(pitchConfidenceMean.toFixed(3)) : null,
+    transientRate: Number(transientRate.toFixed(3)),
+    pitchStd: Number(pitchStd.toFixed(2)),
+    voicedPitchRatio: Number(voicedPitchRatio.toFixed(3)),
+    isTrueMonoOverlap: trueMonoOverlap,
+    FINAL_RESULT: Boolean(stereoStrong || stereoScore >= 0.50 || trueMonoOverlap)
+  });
+
+  return Boolean(
     stereoStrong ||
-    stereoScore >= 0.58 ||
-    (stereoScore >= 0.35 && monoScore >= 0.5) ||
-    monoScore >= 0.62 ||
-    crowdedMonoSpeech ||
-    unstablePitchTracking ||
-    sustainedComplexVoicing
+    stereoScore >= 0.50 ||
+    trueMonoOverlap
   );
 }
 

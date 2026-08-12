@@ -190,6 +190,21 @@ assert.equal(
 
 assert.equal(
   detectSpeakerOverlap({
+    segmentDensity: 1.15,
+    harmonicity: 0.05,
+    pitchStd: 17,
+    meanSpeechZcr: 0.023,
+    speechRatio: 0.44,
+    voicedPitchRatio: 0.29,
+    transientRate: 0.014,
+    pitchConfidenceMean: 0.48,
+    channelCount: 1,
+  }),
+  true,
+);
+
+assert.equal(
+  detectSpeakerOverlap({
     segmentDensity: 1.08,
     harmonicity: 0.03,
     pitchStd: 11,

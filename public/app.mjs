@@ -7,8 +7,8 @@ import {
   fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
-} from "/analysis-rules.mjs?v=6";
-import { analyzeAudioEvents } from "/yamnet-noise.mjs?v=3";
+} from "/analysis-rules.mjs";
+import { analyzeAudioEvents } from "/yamnet-noise.mjs";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -1086,6 +1086,8 @@ function analyzeSamples(samples, sampleRate, overlapContext = {}) {
       pauseRatio,
       longSilencePresent,
       speechSegmentCount,
+      speechFrameIndices: speechFrames.map((entry) => entry.index),
+      hopSeconds: hopSize / sampleRate,
     },
   };
 }
@@ -1277,6 +1279,90 @@ function buildToneCandidates(audioBuffer, mixedSamples) {
     samples: audioBuffer.getChannelData(channelIndex),
     scope: `Automatic customer candidate: channel ${channelIndex + 1}`,
   }));
+}
+
+function measureChannelSpeechCollision(evaluatedCandidates) {
+  if (evaluatedCandidates.length !== 2) {
+    return {
+      available: false,
+      overlapPresent: null,
+      overlapSeconds: 0,
+      longestOverlapSeconds: 0,
+      overlapRatio: 0,
+    };
+  }
+
+  const [firstCandidate, secondCandidate] = evaluatedCandidates;
+  const firstFrames = new Set(firstCandidate.toneAnalysis.metrics.speechFrameIndices || []);
+  const secondFrames = new Set(secondCandidate.toneAnalysis.metrics.speechFrameIndices || []);
+  const hopSeconds = firstCandidate.toneAnalysis.metrics.hopSeconds || 0.01;
+  const firstMetrics = firstCandidate.toneAnalysis.metrics;
+  const secondMetrics = secondCandidate.toneAnalysis.metrics;
+
+  if (!firstFrames.size || !secondFrames.size) {
+    return {
+      available: true,
+      overlapPresent: false,
+      overlapSeconds: 0,
+      longestOverlapSeconds: 0,
+      overlapRatio: 0,
+    };
+  }
+
+  const collisionFrames = [];
+  for (const frameIndex of firstFrames) {
+    if (secondFrames.has(frameIndex)) {
+      collisionFrames.push(frameIndex);
+    }
+  }
+  collisionFrames.sort((left, right) => left - right);
+
+  let longestRunFrames = 0;
+  let currentRunFrames = 0;
+  let previousFrame = null;
+  for (const frameIndex of collisionFrames) {
+    currentRunFrames = previousFrame === null || frameIndex === previousFrame + 1
+      ? currentRunFrames + 1
+      : 1;
+    longestRunFrames = Math.max(longestRunFrames, currentRunFrames);
+    previousFrame = frameIndex;
+  }
+
+  const overlapSeconds = collisionFrames.length * hopSeconds;
+  const longestOverlapSeconds = longestRunFrames * hopSeconds;
+  const activeUnionFrames = new Set([...firstFrames, ...secondFrames]).size;
+  const overlapRatio = collisionFrames.length / Math.max(1, activeUnionFrames);
+  const firstSpeechRatio = firstFrames.size / Math.max(1, firstMetrics.frames || 1);
+  const secondSpeechRatio = secondFrames.size / Math.max(1, secondMetrics.frames || 1);
+  const weakerSpeechRatio = Math.min(firstSpeechRatio, secondSpeechRatio);
+  const strongerSpeechRatio = Math.max(firstSpeechRatio, secondSpeechRatio);
+  const weakerSegmentDensity = Math.min(
+    firstMetrics.segmentDensity || 0,
+    secondMetrics.segmentDensity || 0,
+  );
+  const dominantBackgroundLike =
+    weakerSpeechRatio < 0.08 ||
+    weakerSegmentDensity < 0.18 ||
+    strongerSpeechRatio - weakerSpeechRatio > 0.68;
+  const conversationalCollision =
+    weakerSpeechRatio >= 0.1 &&
+    weakerSegmentDensity >= 0.22 &&
+    overlapRatio >= 0.06 &&
+    overlapRatio <= 0.55;
+  const overlapPresent =
+    !dominantBackgroundLike &&
+    conversationalCollision &&
+    (longestOverlapSeconds >= 0.35 || overlapSeconds >= 0.8);
+
+  return {
+    available: true,
+    overlapPresent,
+    overlapSeconds,
+    longestOverlapSeconds,
+    overlapRatio,
+    weakerSpeechRatio,
+    weakerSegmentDensity,
+  };
 }
 
 function resampleAudio(samples, sourceRate, targetRate) {
@@ -2103,11 +2189,16 @@ async function analyzeBatch() {
         evaluatedCandidates.sort((left, right) => right.customerScore - left.customerScore);
         const toneSelection = evaluatedCandidates[0];
         const toneAnalysis = toneSelection.toneAnalysis;
+        const channelCollision = measureChannelSpeechCollision(evaluatedCandidates);
+        const speakerOverlapPresent = channelCollision.available
+          ? channelCollision.overlapPresent
+          : technicalAnalysis.result.speaker_overlap_present;
         const baselineResult = {
           ...technicalAnalysis.result,
           emotional_tone: toneAnalysis.result.emotional_tone,
           emotional_intensity: toneAnalysis.result.emotional_intensity,
           confidence: toneAnalysis.result.confidence,
+          speaker_overlap_present: Boolean(speakerOverlapPresent),
         };
         const modelEvidence = toneSelection.modelEvidence;
         const semanticEvidence = toneSelection.semanticEvidence;
@@ -2121,6 +2212,7 @@ async function analyzeBatch() {
           ...technicalAnalysis.metrics,
           audioEvents,
           stereoOverlapContext,
+          channelCollision,
           toneScope: toneSelection.scope,
           speakerSelection: {
             strategy: toneCandidates.length > 1 ? "automatic_channel_ranking" : "mixed_audio_fallback",
