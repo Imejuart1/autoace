@@ -34,6 +34,8 @@ const MIME_TYPES = new Map([
   [".flac", "audio/flac"],
   [".webm", "audio/webm"],
   [".opus", "audio/opus"],
+  [".onnx", "application/octet-stream"],
+  [".wasm", "application/wasm"],
 ]);
 
 function sendJson(res, statusCode, payload, headers = {}) {
@@ -151,11 +153,14 @@ function hasPublicFile(requestPath) {
     requestPath === "/login.html" ||
     requestPath === "/app.mjs" ||
     requestPath === "/analysis-rules.mjs" ||
+    requestPath === "/yamnet-noise.mjs" ||
     requestPath === "/login.mjs" ||
     requestPath === "/styles.css" ||
     requestPath === "/README.md" ||
     requestPath === "/TECHNICAL_MEMO.md" ||
-    requestPath.startsWith("/assets/")
+    requestPath.startsWith("/assets/") ||
+    requestPath.startsWith("/models/") ||
+    requestPath.startsWith("/vendor/")
   );
 }
 

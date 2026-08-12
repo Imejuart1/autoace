@@ -7,7 +7,7 @@ This repository contains a hosted dashboard for the AutoAce voice-tone and backg
 - Folder upload support through `webkitdirectory`
 - ZIP upload support for standard stored or deflate-compressed archives
 - Manifest validation against `labels.csv`
-- Browser-side audio decoding and acoustic feature extraction
+- Browser-side audio decoding, acoustic feature extraction, and YAMNet AudioSet event detection
 - Vercel-hosted emotion-model evidence blended with the acoustic baseline
 - Local Whisper transcription and conservative transcript-emotion classification
 - Predictions download as CSV and JSON
@@ -58,6 +58,8 @@ If you prefer, you can also run `node server.js` directly.
 ## Notes on the current model
 
 - The acoustic baseline estimates tone, noise, overlap, silence, and quality from decoded waveform features.
+- Background-noise detection fuses YAMNet's 521-class learned event scores with the acoustic baseline. Quiet events are accepted only when they persist across analysis frames and clearly dominate competing event classes; this avoids treating every compression artifact as meaningful noise.
+- Noise type comes from the learned event family rather than a filename or manifest label. The manifest is used only after inference to compute validation metrics.
 - The hosted tone model runs `onnx-community/Speech-Emotion-Classification-ONNX` on selected 16 kHz speech segments and blends high-confidence `neutral`, `angry`, `happy`, and `sad` evidence with the baseline.
 - Multilingual Whisper first identifies the spoken language. English segments are transcribed by `onnx-community/whisper-tiny.en`; other supported languages use `onnx-community/whisper-tiny` with English translation so the same conservative semantic rules can evaluate the wording.
 - The detected language is reused across the remaining selected segments of a clip, avoiding repeated language-identification work.
@@ -68,7 +70,7 @@ If you prefer, you can also run `node server.js` directly.
 
 ## Measured performance
 
-- The last measured three-call run before semantic fusion produced tone accuracy `0.667`, observed-class tone macro F1 `0.667`, noise accuracy `1.000`, and quality accuracy `1.000`.
+- An earlier three-call run produced tone accuracy `0.667`, observed-class tone macro F1 `0.667`, noise accuracy `1.000`, and quality accuracy `1.000`; these historical numbers are not claimed for the current model until the complete batch is rerun.
 - The semantic regression for an acoustically positive but verbally aggressive clip now resolves to `upset` / `high`.
 - Cached emotion plus Whisper inference measured about `5.31 s` for one 18-second segment on this machine. The first uncached model download and initialization measured about `69.8 s`.
 - The complete three-call batch must be rerun after the semantic and overlap changes before publishing final validation metrics.

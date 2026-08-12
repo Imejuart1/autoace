@@ -55,6 +55,49 @@ export function classifyNoiseSeverity({
   return intermittentlyImpaired ? "medium" : "low";
 }
 
+export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
+  if (!audioEvents?.available || !audioEvents.candidate) {
+    return acousticResult;
+  }
+
+  const candidate = audioEvents.candidate;
+  const acousticPresent = Boolean(acousticResult.background_noise_present);
+  const competingConfidence = Math.max(
+    0.0001,
+    ...(audioEvents.candidates || [])
+      .filter((entry) => entry.type !== candidate.type)
+      .map((entry) => entry.confidence || 0),
+  );
+  const eventDominance = candidate.confidence / competingConfidence;
+  const strongEvent =
+    candidate.confidence >= 0.5 && candidate.persistence >= 0.18;
+  const quietBackgroundEvent =
+    candidate.confidence >= 0.015 &&
+    candidate.meanConfidence >= 0.003 &&
+    candidate.backgroundActivity >= 0.08 &&
+    eventDominance >= 3;
+  const corroboratedEvent =
+    acousticPresent &&
+    candidate.confidence >= 0.015 &&
+    candidate.meanConfidence >= 0.003 &&
+    eventDominance >= 2;
+
+  if (!(corroboratedEvent || strongEvent || quietBackgroundEvent)) {
+    return acousticResult;
+  }
+
+  const severity = acousticPresent
+    ? acousticResult.background_noise_severity
+    : classifyNoiseSeverity({ ...metrics, noisePresent: true });
+
+  return {
+    ...acousticResult,
+    background_noise_present: true,
+    background_noise_type: candidate.type,
+    background_noise_severity: severity,
+  };
+}
+
 export function detectSpeakerOverlap({
   segmentDensity,
   harmonicity,

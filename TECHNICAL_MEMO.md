@@ -17,8 +17,9 @@ I worked through three stages:
    - overlap proxies
 3. A hybrid model path that combines the acoustic baseline with Vercel-hosted pretrained emotion evidence from Transformers.js.
 4. A semantic path using local Whisper transcription and conservative transcript-emotion rules.
+5. A browser-side YAMNet AudioSet event model fused with signal measurements for background-noise presence and type.
 
-The hybrid architecture retains deterministic checks for audio quality, overlap, silence, and noise. Pretrained acoustic emotion and local transcript semantics affect tone only. This preserves privacy and avoids paid inference APIs while keeping technical audio fields independent from transcript content.
+The hybrid architecture retains deterministic checks for audio quality, overlap, and silence. Noise combines a learned audio-event model with deterministic severity measurements. Pretrained acoustic emotion and local transcript semantics affect tone only. This preserves privacy and avoids paid inference APIs while keeping technical audio fields independent from transcript content.
 
 ## Final Architecture
 
@@ -31,6 +32,8 @@ The hybrid architecture retains deterministic checks for audio quality, overlap,
 - The endpoint runs `onnx-community/Speech-Emotion-Classification-ONNX` plus automatic Whisper language routing in the Vercel Node runtime. Multilingual Whisper identifies the language; English uses `onnx-community/whisper-tiny.en`, while other supported languages use `onnx-community/whisper-tiny` with translation to English for semantic rules.
 - The model's four broad outputs (`neutral`, `angry`, `happy`, `sad`) are fused conservatively with the acoustic baseline to produce the required AutoAce tone labels.
 - Transcript rules account for explicit dissatisfaction, confrontation, profanity, panic, positive language, and negation. Transcript evidence never determines noise, quality, overlap, or silence.
+- YAMNet runs locally in the evaluator's browser over representative windows and groups AudioSet predictions into concise categories aligned with the supplied labels, such as TV, sharp static, music, office chatter, road noise, wind, and mechanical noise.
+- Noise fusion requires event strength, temporal activity, and separation from competing event classes. Acoustic evidence supplies a fallback and determines severity. Filenames and manifest labels are never inputs to prediction.
 - Deterministic rules produce the required output schema:
   - emotional tone
   - emotional intensity
@@ -74,7 +77,8 @@ The complete batch runtime must be remeasured after deployment because serverles
 ## Failure Modes and Limitations
 
 - The system can still confuse neutral and satisfied speech when pitch and speech energy are similar.
-- Background-noise labels are heuristic and can overfit to spectral patterns that are not truly semantic noise categories.
+- Quiet background events can still be missed when foreground speech masks them, and semantically similar events such as television, radio, and nearby chatter can be confused.
+- YAMNet was trained on general AudioSet clips rather than dealership calls, so event thresholds require evaluation on a larger, speaker-grouped call set.
 - Long-silence detection can be brittle on very long recordings with natural pauses.
 - The pretrained emotion model was trained on broad IEMOCAP emotions rather than the AutoAce label taxonomy. It should be calibrated on a larger dealership-call set before reporting generalization claims.
 - Split stereo channels are ranked automatically, but mixed mono calls still lack guaranteed customer diarization.

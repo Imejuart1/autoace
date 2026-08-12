@@ -4,9 +4,11 @@ import {
   classifyTranscriptEmotion,
   detectBackgroundNoise,
   detectSpeakerOverlap,
+  fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
-} from "/analysis-rules.mjs?v=5";
+} from "/analysis-rules.mjs?v=6";
+import { analyzeAudioEvents } from "/yamnet-noise.mjs?v=3";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -45,6 +47,10 @@ const state = {
     reason: "",
   },
   semanticModel: {
+    status: "unknown",
+    reason: "",
+  },
+  audioEventModel: {
     status: "unknown",
     reason: "",
   },
@@ -1628,6 +1634,7 @@ function renderOperationalSummary() {
   const cards = [
     ["Tone engine", state.toneModel.status === "active" ? "Hybrid pretrained model" : "Acoustic fallback"],
     ["Semantic engine", state.semanticModel.status === "active" ? "Local transcription active" : "Acoustic-only fallback"],
+    ["Noise engine", state.audioEventModel.status === "active" ? "YAMNet + acoustic fusion" : "Acoustic fallback"],
     ["Language routing", "Automatic English / multilingual"],
     ["Tone source", timing.toneScopes?.join(", ") || "Mixed call"],
     ["Audio minutes", audioMinutes.toFixed(2)],
@@ -1849,6 +1856,7 @@ async function analyzeBatch() {
   syncDownloadLinks();
   state.toneModel = { status: "unknown", reason: "" };
   state.semanticModel = { status: "unknown", reason: "" };
+  state.audioEventModel = { status: "unknown", reason: "" };
   setProgress("Preparing batch", 0.02);
   setStatus("Preparing batch", "info");
   setMessage("Reading uploaded files and validating the manifest...");
@@ -1906,6 +1914,20 @@ async function analyzeBatch() {
         totalAudioSeconds += audioBuffer.duration || 0;
         const mixedSamples = toMonoArray(audioBuffer);
         const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
+        setProgress(`Classifying sounds in ${entry.name}`, progress + 0.01);
+        const audioEvents = await analyzeAudioEvents(mixedSamples, audioBuffer.sampleRate);
+        if (audioEvents.available) {
+          state.audioEventModel.status = "active";
+          state.audioEventModel.reason = "";
+          technicalAnalysis.result = fuseAudioEventNoise(
+            technicalAnalysis.result,
+            technicalAnalysis.metrics,
+            audioEvents,
+          );
+        } else if (state.audioEventModel.status !== "active") {
+          state.audioEventModel.status = "unavailable";
+          state.audioEventModel.reason = audioEvents.reason || "YAMNet was unavailable.";
+        }
         const toneCandidates = buildToneCandidates(audioBuffer, mixedSamples);
         const evaluatedCandidates = [];
         let fileLanguageHint = "";
@@ -1955,6 +1977,7 @@ async function analyzeBatch() {
         );
         const metrics = {
           ...technicalAnalysis.metrics,
+          audioEvents,
           toneScope: toneSelection.scope,
           speakerSelection: {
             strategy: toneCandidates.length > 1 ? "automatic_channel_ranking" : "mixed_audio_fallback",
