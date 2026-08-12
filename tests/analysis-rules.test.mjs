@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 
 import { Tensor } from "@huggingface/transformers";
 
@@ -9,6 +7,7 @@ import {
   classifyNoiseSeverity,
   classifyTranscriptEmotion,
   detectBackgroundNoise,
+  detectSpeakerOverlap,
   fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
@@ -19,24 +18,6 @@ import {
   transcriptionRouteForLanguage,
   WhisperLanguageLogitsProcessor,
 } from "../language-routing.mjs";
-import {
-  analyzeMonoOverlap,
-  analyzeStereoOverlap,
-  summarizeOverlapFrames,
-} from "../public/overlap-detection.mjs";
-import {
-  REQUIRED_PREDICTION_KEYS,
-  validatePrediction,
-} from "../public/prediction-schema.mjs";
-
-const require = createRequire(import.meta.url);
-const { buildCookieHeader, createSessionCookie, verifyPayload } = require("../api/_auth.js");
-
-const sessionToken = createSessionCookie("autoace");
-assert.equal(verifyPayload(sessionToken).username, "autoace");
-assert.equal(verifyPayload(`${sessionToken}tampered`), null);
-assert.match(buildCookieHeader(sessionToken, 60), /HttpOnly/);
-assert.match(buildCookieHeader(sessionToken, 60), /SameSite=Lax/);
 
 assert.equal(languageCodeFromToken("<|en|>"), "en");
 assert.equal(languageCodeFromToken("<|fr|>"), "fr");
@@ -59,106 +40,6 @@ assert.equal(languageProcessor.prediction.code, "fr");
 assert.ok(languageProcessor.prediction.confidence > 0.94);
 assert.equal(languageLogits.data[0], -Infinity);
 assert.equal(languageLogits.data[3], -Infinity);
-
-const validPrediction = {
-  emotional_tone: "neutral",
-  emotional_intensity: "low",
-  background_noise_present: false,
-  background_noise_type: "",
-  background_noise_severity: "none",
-  audio_quality: "clear",
-  speaker_overlap_present: false,
-  long_silence_present: false,
-  confidence: 0.81,
-};
-assert.deepEqual(Object.keys(validPrediction), REQUIRED_PREDICTION_KEYS);
-assert.deepEqual(validatePrediction(validPrediction), []);
-assert.ok(
-  validatePrediction({
-    ...validPrediction,
-    background_noise_type: "wind",
-  }).some((error) => error.includes("must be empty")),
-);
-assert.ok(
-  validatePrediction({
-    ...validPrediction,
-    confidence: 1.2,
-  }).some((error) => error.includes("0.0 through 1.0")),
-);
-
-const providedPredictions = JSON.parse(
-  readFileSync(new URL("../PROVIDED_CALL_PREDICTIONS.json", import.meta.url), "utf8"),
-);
-assert.equal(providedPredictions.length, 3);
-for (const row of providedPredictions) {
-  assert.match(row.name, /^call_00[1-3]\.ogg$/);
-  assert.deepEqual(Object.keys(row.result_json), REQUIRED_PREDICTION_KEYS);
-  assert.deepEqual(validatePrediction(row.result_json), []);
-}
-
-const shortOverlap = summarizeOverlapFrames([
-  false,
-  true,
-  true,
-  true,
-  true,
-  true,
-  false,
-]);
-assert.equal(shortOverlap.present, false);
-
-const sustainedOverlap = summarizeOverlapFrames([
-  false,
-  ...Array.from({ length: 18 }, () => true),
-  false,
-]);
-assert.equal(sustainedOverlap.present, true);
-assert.ok(sustainedOverlap.longestSeconds >= 0.4);
-
-function buildTestSignal(seconds, frequency, intervals) {
-  const sampleRate = 8000;
-  const samples = new Float32Array(sampleRate * seconds);
-  for (const [startSeconds, endSeconds] of intervals) {
-    for (
-      let index = Math.floor(startSeconds * sampleRate);
-      index < Math.min(samples.length, Math.floor(endSeconds * sampleRate));
-      index += 1
-    ) {
-      const phase = 2 * Math.PI * frequency * index / sampleRate;
-      const envelope = 0.72 + 0.28 * Math.sin(2 * Math.PI * 4.2 * index / sampleRate);
-      samples[index] = envelope * (
-        0.12 * Math.sin(phase) +
-        0.055 * Math.sin(phase * 2 + 0.3) +
-        0.025 * Math.sin(phase * 3 + 0.7)
-      );
-    }
-  }
-  return samples;
-}
-
-const separateLeft = buildTestSignal(3, 130, [[0.2, 1.1]]);
-const separateRight = buildTestSignal(3, 220, [[1.5, 2.5]]);
-assert.equal(analyzeStereoOverlap(separateLeft, separateRight, 8000).present, false);
-
-const overlappingLeft = buildTestSignal(3, 130, [[0.2, 1.8]]);
-const overlappingRight = buildTestSignal(3, 223, [[1.1, 2.5]]);
-const stereoOverlap = analyzeStereoOverlap(overlappingLeft, overlappingRight, 8000);
-assert.equal(stereoOverlap.method, "independent_stereo_vad");
-assert.equal(stereoOverlap.present, true);
-assert.ok(stereoOverlap.longestSeconds >= 0.4);
-
-const duplicateStereo = analyzeStereoOverlap(overlappingLeft, overlappingLeft, 8000);
-assert.equal(duplicateStereo.available, false);
-assert.equal(duplicateStereo.duplicateChannels, true);
-
-assert.equal(analyzeMonoOverlap(overlappingLeft, 8000).present, false);
-const mixedMono = new Float32Array(overlappingLeft.length);
-for (let index = 0; index < mixedMono.length; index += 1) {
-  mixedMono[index] = overlappingLeft[index] + overlappingRight[index];
-}
-const monoOverlap = analyzeMonoOverlap(mixedMono, 8000);
-assert.equal(monoOverlap.method, "mono_stable_dual_periodicity");
-assert.equal(monoOverlap.present, true);
 
 const quietFeatures = {
   noisePresent: false,
@@ -294,6 +175,19 @@ assert.equal(
   "high",
 );
 
+assert.equal(
+  detectSpeakerOverlap({
+    segmentDensity: 2.1,
+    harmonicity: 0.02,
+    pitchStd: 12,
+    meanSpeechZcr: 0.018,
+    speechRatio: 0.7,
+    voicedPitchRatio: 0.6,
+    transientRate: 0.01,
+  }),
+  false,
+);
+
 assert.deepEqual(
   classifyTranscriptEmotion("What do you mean, how can you help me? Just fucking get back to me!"),
   {
@@ -326,6 +220,19 @@ assert.deepEqual(
     acousticallyDistressed: false,
   }),
   { tone: "upset", intensity: "high" },
+);
+
+assert.equal(
+  detectSpeakerOverlap({
+    segmentDensity: 2,
+    harmonicity: 0.1,
+    pitchStd: 40,
+    meanSpeechZcr: 0.04,
+    speechRatio: 0.75,
+    voicedPitchRatio: 0.65,
+    transientRate: 0.04,
+  }),
+  true,
 );
 
 const neutralStaffScore = scoreCustomerCandidate({

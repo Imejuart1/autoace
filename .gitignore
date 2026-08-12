@@ -4,8 +4,3 @@
 deps/
 tmp/
 node_modules/
-.venv/
-.codex-doc-review/
-ml_service/
-__pycache__/
-*.pyc

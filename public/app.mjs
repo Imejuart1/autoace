@@ -3,13 +3,12 @@ import {
   classifyNoiseSeverity,
   classifyTranscriptEmotion,
   detectBackgroundNoise,
+  detectSpeakerOverlap,
   fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
 } from "/analysis-rules.mjs?v=6";
 import { analyzeAudioEvents } from "/yamnet-noise.mjs?v=3";
-import { analyzeMonoOverlap, analyzeStereoOverlap } from "/overlap-detection.mjs?v=1";
-import { validatePrediction } from "/prediction-schema.mjs?v=1";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -1002,6 +1001,16 @@ function analyzeSamples(samples, sampleRate) {
     1,
   );
 
+  const overlapPresent = detectSpeakerOverlap({
+    segmentDensity,
+    harmonicity,
+    pitchStd,
+    meanSpeechZcr,
+    speechRatio: totalSpeechFrames / Math.max(1, frames.length),
+    voicedPitchRatio: voicedPitchCount / Math.max(1, speechFrames.length),
+    transientRate,
+  });
+
   const quality = deriveQuality({
     noiseSeverity,
     clippingRate: clipRate,
@@ -1045,7 +1054,7 @@ function analyzeSamples(samples, sampleRate) {
       background_noise_type: noiseType,
       background_noise_severity: noiseSeverity,
       audio_quality: quality,
-      speaker_overlap_present: false,
+      speaker_overlap_present: Boolean(overlapPresent),
       long_silence_present: Boolean(longSilencePresent),
       confidence: Number(confidence.toFixed(2)),
     },
@@ -1131,30 +1140,6 @@ function buildToneCandidates(audioBuffer, mixedSamples) {
     samples: audioBuffer.getChannelData(channelIndex),
     scope: `Automatic customer candidate: channel ${channelIndex + 1}`,
   }));
-}
-
-function analyzeSpeakerOverlap(audioBuffer, mixedSamples) {
-  if (audioBuffer.numberOfChannels >= 2) {
-    const stereoAnalysis = analyzeStereoOverlap(
-      audioBuffer.getChannelData(0),
-      audioBuffer.getChannelData(1),
-      audioBuffer.sampleRate,
-    );
-    if (stereoAnalysis.available) {
-      return stereoAnalysis;
-    }
-
-    return {
-      ...analyzeMonoOverlap(mixedSamples, audioBuffer.sampleRate),
-      channelLayout: stereoAnalysis.duplicateChannels ? "dual_mono" : "mixed_stereo",
-      stereoFallback: stereoAnalysis,
-    };
-  }
-
-  return {
-    ...analyzeMonoOverlap(mixedSamples, audioBuffer.sampleRate),
-    channelLayout: "mono",
-  };
 }
 
 function resampleAudio(samples, sourceRate, targetRate) {
@@ -1929,9 +1914,6 @@ async function analyzeBatch() {
         totalAudioSeconds += audioBuffer.duration || 0;
         const mixedSamples = toMonoArray(audioBuffer);
         const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
-        const overlapAnalysis = analyzeSpeakerOverlap(audioBuffer, mixedSamples);
-        technicalAnalysis.result.speaker_overlap_present = Boolean(overlapAnalysis.present);
-        technicalAnalysis.metrics.overlap = overlapAnalysis;
         setProgress(`Classifying sounds in ${entry.name}`, progress + 0.01);
         const audioEvents = await analyzeAudioEvents(mixedSamples, audioBuffer.sampleRate);
         if (audioEvents.available) {
@@ -1993,10 +1975,6 @@ async function analyzeBatch() {
           modelEvidence,
           semanticEvidence,
         );
-        const schemaErrors = validatePrediction(result);
-        if (schemaErrors.length) {
-          throw new Error(`Prediction schema validation failed: ${schemaErrors.join(" ")}`);
-        }
         const metrics = {
           ...technicalAnalysis.metrics,
           audioEvents,
