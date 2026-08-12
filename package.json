@@ -5,7 +5,8 @@
   "description": "AutoAce voice tone and background noise trial dashboard",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node tests/analysis-rules.test.mjs"
   },
   "engines": {
     "node": ">=18"

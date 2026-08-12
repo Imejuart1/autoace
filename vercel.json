@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/tone.js": {
+      "maxDuration": 300
+    }
+  },
   "routes": [
     { "src": "^/$", "dest": "/api/page" },
     { "src": "^/login$", "dest": "/api/page" },

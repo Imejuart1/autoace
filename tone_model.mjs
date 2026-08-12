@@ -5,6 +5,9 @@ import { pipeline, env } from "@huggingface/transformers";
 
 const MODEL_ID = process.env.AUTOACE_TONE_MODEL || "onnx-community/Speech-Emotion-Classification-ONNX";
 const MODEL_DTYPE = process.env.AUTOACE_TONE_MODEL_DTYPE || "q4";
+const ASR_MODEL_ID = process.env.AUTOACE_ASR_MODEL || "onnx-community/whisper-tiny.en";
+const ASR_MODEL_DTYPE = process.env.AUTOACE_ASR_MODEL_DTYPE || "q4";
+const ASR_ENABLED = process.env.AUTOACE_ASR_ENABLED !== "0";
 const CACHE_DIR = process.env.AUTOACE_TF_CACHE_DIR || path.join(os.tmpdir(), "autoace-hf-cache");
 const MAX_PCM_BYTES = 1_500_000;
 const LABELS = ["neu", "ang", "hap", "sad"];
@@ -26,6 +29,7 @@ env.allowRemoteModels = true;
 env.allowLocalModels = true;
 
 let classifierPromise;
+let transcriberPromise;
 
 function decodePcm16Base64(pcm16Base64) {
   try {
@@ -52,6 +56,41 @@ async function loadClassifier() {
     });
   }
   return classifierPromise;
+}
+
+async function loadTranscriber() {
+  if (!ASR_ENABLED) {
+    return null;
+  }
+  if (!transcriberPromise) {
+    transcriberPromise = pipeline("automatic-speech-recognition", ASR_MODEL_ID, {
+      cache_dir: CACHE_DIR,
+      device: "cpu",
+      dtype: ASR_MODEL_DTYPE,
+    });
+  }
+  return transcriberPromise;
+}
+
+async function transcribeAudio(audio) {
+  try {
+    const transcriber = await loadTranscriber();
+    if (!transcriber) {
+      return { available: false, text: "", reason: "Local transcription is disabled." };
+    }
+    const transcription = await transcriber(audio);
+    return {
+      available: true,
+      text: String(transcription?.text || "").trim(),
+      model: ASR_MODEL_ID,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      text: "",
+      reason: error instanceof Error ? error.message : "Local transcription failed.",
+    };
+  }
 }
 
 function normalizeScores(predictions) {
@@ -83,8 +122,10 @@ function normalizeScores(predictions) {
 export function getToneModelStatus() {
   return {
     model: MODEL_ID,
+    asrModel: ASR_ENABLED ? ASR_MODEL_ID : null,
     cacheDir: CACHE_DIR,
     loaded: Boolean(classifierPromise),
+    transcriberLoaded: Boolean(transcriberPromise),
   };
 }
 
@@ -108,11 +149,16 @@ export async function classifyToneRequest(payload = {}) {
   const labels = normalizeScores(predictions);
   const ordered = Object.entries(labels).sort((left, right) => right[1] - left[1]);
   const [topLabel, confidence] = ordered[0];
+  const transcription = await transcribeAudio(audio);
 
   return {
     model: MODEL_ID,
     labels,
     top_label: topLabel,
     confidence: Number(confidence.toFixed(4)),
+    transcript: transcription.text,
+    transcription_available: transcription.available,
+    transcription_model: transcription.model || null,
+    transcription_reason: transcription.reason || "",
   };
 }

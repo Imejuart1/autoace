@@ -1,3 +1,12 @@
+import {
+  applySemanticTone,
+  classifyNoiseSeverity,
+  classifyTranscriptEmotion,
+  detectSpeakerOverlap,
+  hasStrongDistressEvidence,
+  scoreCustomerCandidate,
+} from "/analysis-rules.mjs?v=4";
+
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
   ".ogg",
@@ -31,6 +40,10 @@ const state = {
   downloadUrls: [],
   analysisTiming: null,
   toneModel: {
+    status: "unknown",
+    reason: "",
+  },
+  semanticModel: {
     status: "unknown",
     reason: "",
   },
@@ -290,6 +303,7 @@ function clearState(keepMessage = false) {
   state.downloadUrls = [];
   state.analysisTiming = null;
   state.toneModel = { status: "unknown", reason: "" };
+  state.semanticModel = { status: "unknown", reason: "" };
   dom.resultsBody.innerHTML = '<tr><td colspan="10" class="empty-state">No analysis run yet.</td></tr>';
   dom.summaryCards.innerHTML = "";
   dom.validationSummary.innerHTML = "";
@@ -933,15 +947,15 @@ function analyzeSamples(samples, sampleRate) {
   const noisePresent =
     segmentDensity > 1.2 || noiseFloor > 0.00075 || noiseRatio > 0.16 || flatness > 0.18 || transientRate > 0.02;
 
-  const noiseSeverity = !noisePresent
-    ? "none"
-    : segmentDensity > 2.3 || noiseFloor > 0.0012
-      ? "medium"
-      : segmentDensity > 1.1 || noiseRatio > 0.18
-        ? "low"
-      : noiseRatio > 0.12 || flatness > 0.2
-        ? "medium"
-        : "low";
+  const noiseSeverity = classifyNoiseSeverity({
+    noisePresent,
+    segmentDensity,
+    noiseFloor,
+    noiseRatio,
+    signalToNoise,
+    flatness,
+    transientRate,
+  });
 
   const noiseType = noisePresent
     ? detectNoiseType({
@@ -965,10 +979,15 @@ function analyzeSamples(samples, sampleRate) {
     1,
   );
 
-  const overlapPresent =
-    segmentDensity > 1.2 ||
-    (noisePresent && speechSegmentCount > 120) ||
-    (harmonicity > 0.08 && pitchStd > 24 && meanSpeechZcr > 0.025);
+  const overlapPresent = detectSpeakerOverlap({
+    segmentDensity,
+    harmonicity,
+    pitchStd,
+    meanSpeechZcr,
+    speechRatio: totalSpeechFrames / Math.max(1, frames.length),
+    voicedPitchRatio: voicedPitchCount / Math.max(1, speechFrames.length),
+    transientRate,
+  });
 
   const quality = deriveQuality({
     noiseSeverity,
@@ -1067,6 +1086,40 @@ function toMonoArray(audioBuffer) {
   return mono;
 }
 
+function channelsAreEffectivelyDuplicate(audioBuffer, leftIndex, rightIndex) {
+  if (leftIndex >= audioBuffer.numberOfChannels || rightIndex >= audioBuffer.numberOfChannels) {
+    return false;
+  }
+
+  const left = audioBuffer.getChannelData(leftIndex);
+  const right = audioBuffer.getChannelData(rightIndex);
+  const step = Math.max(1, Math.floor(audioBuffer.length / 20000));
+  let differenceEnergy = 0;
+  let signalEnergy = 0;
+
+  for (let index = 0; index < audioBuffer.length; index += step) {
+    const difference = left[index] - right[index];
+    differenceEnergy += difference * difference;
+    signalEnergy += left[index] * left[index] + right[index] * right[index];
+  }
+
+  return differenceEnergy / Math.max(signalEnergy, 1e-12) < 0.0001;
+}
+
+function buildToneCandidates(audioBuffer, mixedSamples) {
+  if (audioBuffer.numberOfChannels < 2) {
+    return [{ samples: mixedSamples, scope: "Automatic mixed mono" }];
+  }
+  if (channelsAreEffectivelyDuplicate(audioBuffer, 0, 1)) {
+    return [{ samples: mixedSamples, scope: "Automatic mixed dual-mono" }];
+  }
+
+  return [0, 1].map((channelIndex) => ({
+    samples: audioBuffer.getChannelData(channelIndex),
+    scope: `Automatic customer candidate: channel ${channelIndex + 1}`,
+  }));
+}
+
 function resampleAudio(samples, sourceRate, targetRate) {
   if (sourceRate === targetRate) {
     return samples;
@@ -1162,6 +1215,13 @@ async function requestToneModel(segment, sampleRate) {
   }
 
   state.toneModel.status = "active";
+  if (payload.transcription_available) {
+    state.semanticModel.status = "active";
+    state.semanticModel.reason = "";
+  } else {
+    state.semanticModel.status = "unavailable";
+    state.semanticModel.reason = payload.transcription_reason || "Local transcription is unavailable.";
+  }
   return payload;
 }
 
@@ -1177,6 +1237,7 @@ async function analyzePretrainedTone(samples, sampleRate) {
   }
 
   const combined = { neu: 0, ang: 0, hap: 0, sad: 0 };
+  const transcripts = [];
   let totalWeight = 0;
   let modelName = "";
 
@@ -1185,9 +1246,20 @@ async function analyzePretrainedTone(samples, sampleRate) {
     if (!prediction) {
       return null;
     }
-    const weight = Math.max(0.01, segment.energy * segment.samples.length);
+    const emotionalSalience = Math.max(
+      prediction.labels.ang,
+      prediction.labels.sad,
+      prediction.labels.hap * 0.75,
+    );
+    const weight = Math.max(
+      0.01,
+      segment.energy * segment.samples.length * (0.8 + emotionalSalience * 0.7),
+    );
     totalWeight += weight;
     modelName = prediction.model || modelName;
+    if (prediction.transcript) {
+      transcripts.push(String(prediction.transcript).trim());
+    }
     for (const label of Object.keys(combined)) {
       combined[label] += prediction.labels[label] * weight;
     }
@@ -1204,18 +1276,19 @@ async function analyzePretrainedTone(samples, sampleRate) {
     confidence: ordered[0][1],
     margin: ordered[0][1] - ordered[1][1],
     segments: segments.length,
+    transcript: transcripts.join(" ").trim(),
   };
 }
 
-function fuseTonePrediction(baseline, metrics, modelEvidence) {
-  if (!modelEvidence) {
+function fuseTonePrediction(baseline, metrics, modelEvidence, semanticEvidence) {
+  if (!modelEvidence && !semanticEvidence) {
     return baseline;
   }
 
-  const { neu, ang, hap, sad } = modelEvidence.labels;
-  const reliable = modelEvidence.confidence >= 0.58 && modelEvidence.margin >= 0.1;
+  const { neu = 0, ang = 0, hap = 0, sad = 0 } = modelEvidence?.labels || {};
+  const reliable = Boolean(modelEvidence && modelEvidence.confidence >= 0.58 && modelEvidence.margin >= 0.1);
   const elevatedStress = metrics.speechEnergy > 0.055 || metrics.pitchStd > 42 || metrics.clipRate > 0.012;
-  const strongDistressEvidence = sad >= 0.9 && modelEvidence.margin >= 0.65;
+  const strongDistressEvidence = hasStrongDistressEvidence(modelEvidence);
   let tone = baseline.emotional_tone;
   let intensity = baseline.emotional_intensity;
 
@@ -1239,6 +1312,17 @@ function fuseTonePrediction(baseline, metrics, modelEvidence) {
     intensity = baseline.emotional_intensity === "high" ? "medium" : baseline.emotional_intensity;
   }
 
+  const semanticTone = applySemanticTone({
+    tone,
+    intensity,
+    semanticEvidence:
+      semanticEvidence?.tone === "satisfied" && elevatedStress ? null : semanticEvidence,
+    acousticallyDistressed:
+      tone === "distressed" || strongDistressEvidence || sad > 0.45 || (elevatedStress && ang > 0.4),
+  });
+  tone = semanticTone.tone;
+  intensity = semanticTone.intensity;
+
   const modelSupport =
     tone === "satisfied"
       ? hap
@@ -1249,11 +1333,16 @@ function fuseTonePrediction(baseline, metrics, modelEvidence) {
           : ang;
 
   // Normalized weights (0.75 baseline + 0.25 model = 1.0) to prevent artificial score dropping
-  const confidence = clamp(
-    (baseline.confidence * 0.75) + (modelEvidence.confidence * 0.25) + (modelSupport >= 0.5 ? 0.05 : -0.10),
+  let confidence = clamp(
+    (baseline.confidence * 0.75) +
+      ((modelEvidence?.confidence ?? baseline.confidence) * 0.25) +
+      (modelEvidence ? (modelSupport >= 0.5 ? 0.05 : -0.10) : 0),
     0.32,
     0.99,
   );
+  if (semanticEvidence?.tone === tone && semanticEvidence.score > 0) {
+    confidence = clamp(confidence * 0.65 + semanticEvidence.score * 0.35 + 0.03, 0.32, 0.99);
+  }
 
   return {
     ...baseline,
@@ -1497,11 +1586,13 @@ function renderOperationalSummary() {
 
   const cards = [
     ["Tone engine", state.toneModel.status === "active" ? "Hybrid pretrained model" : "Acoustic fallback"],
+    ["Semantic engine", state.semanticModel.status === "active" ? "Local transcription active" : "Acoustic-only fallback"],
+    ["Tone source", timing.toneScopes?.join(", ") || "Mixed call"],
     ["Audio minutes", audioMinutes.toFixed(2)],
     ["Wall time", `${wallSeconds.toFixed(2)} s`],
     ["Seconds per audio minute", secondsPerAudioMinute.toFixed(2)],
     ["Throughput", `${realtimeFactor.toFixed(1)}x real time`],
-    ["Estimated cost/min", `$${costPerMinute.toFixed(4)}`],
+    ["Paid model API cost/min", `$${costPerMinute.toFixed(4)}`],
   ];
 
   dom.opsSummary.innerHTML = cards
@@ -1715,11 +1806,13 @@ async function analyzeBatch() {
   dom.analyzeButton.disabled = true;
   syncDownloadLinks();
   state.toneModel = { status: "unknown", reason: "" };
+  state.semanticModel = { status: "unknown", reason: "" };
   setProgress("Preparing batch", 0.02);
   setStatus("Preparing batch", "info");
   setMessage("Reading uploaded files and validating the manifest...");
   const analysisStart = Date.now();
   let totalAudioSeconds = 0;
+  const toneScopes = new Set();
 
   try {
     const { audioEntries, manifestRows, sourceFiles } = await getBatchEntries();
@@ -1769,14 +1862,79 @@ async function analyzeBatch() {
       try {
         const audioBuffer = await decodeAudioBuffer(entry.file);
         totalAudioSeconds += audioBuffer.duration || 0;
-        const monoSamples = toMonoArray(audioBuffer);
-        const { result: baselineResult, metrics } = analyzeSamples(monoSamples, audioBuffer.sampleRate);
-        const modelEvidence = await analyzePretrainedTone(monoSamples, audioBuffer.sampleRate);
-        const result = fuseTonePrediction(baselineResult, metrics, modelEvidence);
-        metrics.pretrainedTone = modelEvidence || {
-          available: false,
-          reason: state.toneModel.reason || "Pretrained tone model was not used.",
+        const mixedSamples = toMonoArray(audioBuffer);
+        const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
+        const toneCandidates = buildToneCandidates(audioBuffer, mixedSamples);
+        const evaluatedCandidates = [];
+
+        for (const candidate of toneCandidates) {
+          const toneAnalysis =
+            candidate.samples === mixedSamples
+              ? technicalAnalysis
+              : analyzeSamples(candidate.samples, audioBuffer.sampleRate);
+          const modelEvidence = await analyzePretrainedTone(candidate.samples, audioBuffer.sampleRate);
+          const semanticEvidence = classifyTranscriptEmotion(modelEvidence?.transcript || "");
+          evaluatedCandidates.push({
+            ...candidate,
+            toneAnalysis,
+            modelEvidence,
+            semanticEvidence,
+            customerScore: scoreCustomerCandidate({
+              speechRatio: toneAnalysis.metrics.speechRatio,
+              baselineTone: toneAnalysis.result.emotional_tone,
+              modelEvidence,
+              semanticEvidence,
+            }),
+          });
+        }
+
+        evaluatedCandidates.sort((left, right) => right.customerScore - left.customerScore);
+        const toneSelection = evaluatedCandidates[0];
+        const toneAnalysis = toneSelection.toneAnalysis;
+        const baselineResult = {
+          ...technicalAnalysis.result,
+          emotional_tone: toneAnalysis.result.emotional_tone,
+          emotional_intensity: toneAnalysis.result.emotional_intensity,
+          confidence: toneAnalysis.result.confidence,
         };
+        const modelEvidence = toneSelection.modelEvidence;
+        const semanticEvidence = toneSelection.semanticEvidence;
+        const result = fuseTonePrediction(
+          baselineResult,
+          toneAnalysis.metrics,
+          modelEvidence,
+          semanticEvidence,
+        );
+        const metrics = {
+          ...technicalAnalysis.metrics,
+          toneScope: toneSelection.scope,
+          speakerSelection: {
+            strategy: toneCandidates.length > 1 ? "automatic_channel_ranking" : "mixed_audio_fallback",
+            selected: toneSelection.scope,
+            candidateScores: evaluatedCandidates.map((candidate) => ({
+              scope: candidate.scope,
+              score: Number(candidate.customerScore.toFixed(4)),
+            })),
+          },
+        };
+        toneScopes.add(toneSelection.scope);
+        if (modelEvidence) {
+          const { transcript, ...safeModelEvidence } = modelEvidence;
+          metrics.pretrainedTone = safeModelEvidence;
+          metrics.semanticTone = {
+            ...semanticEvidence,
+            transcriptAvailable: Boolean(transcript),
+          };
+        } else {
+          metrics.pretrainedTone = {
+            available: false,
+            reason: state.toneModel.reason || "Pretrained tone model was not used.",
+          };
+          metrics.semanticTone = {
+            ...semanticEvidence,
+            transcriptAvailable: false,
+          };
+        }
         const truth = manifestRow ? parseGroundTruthJson(manifestRow.result_json) : null;
         results.push({
           name: normalizeName(entry.name),
@@ -1803,6 +1961,7 @@ async function analyzeBatch() {
     state.analysisTiming = {
       wallTimeMs: Date.now() - analysisStart,
       audioSecondsTotal: totalAudioSeconds,
+      toneScopes: [...toneScopes],
     };
     setProgress("Finalizing report", 0.97);
     renderSummary(results);
@@ -1818,9 +1977,13 @@ async function analyzeBatch() {
       state.toneModel.status === "active"
         ? " Pretrained tone model blended with acoustic checks."
         : " Pretrained tone model was unavailable, so acoustic baseline results were used.";
+    const semanticEngineMessage =
+      state.semanticModel.status === "active"
+        ? " Local transcript semantics were included."
+        : " Local transcription was unavailable, so no word-level evidence was used.";
     setMessage(
       `
-        <div class="success">Analysis complete. ${okCount} file(s) processed successfully.${toneEngineMessage}</div>
+        <div class="success">Analysis complete. ${okCount} file(s) processed successfully.${toneEngineMessage}${semanticEngineMessage}</div>
         ${errorCount ? `<div class="error">${errorCount} file(s) failed and were kept out of the downloadable prediction files.</div>` : ""}
       `,
     );
@@ -1836,6 +1999,7 @@ async function analyzeBatch() {
     state.analysisTiming = {
       wallTimeMs: Date.now() - analysisStart,
       audioSecondsTotal: totalAudioSeconds,
+      toneScopes: [...toneScopes],
     };
     renderOperationalSummary();
   } finally {

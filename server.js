@@ -150,6 +150,7 @@ function hasPublicFile(requestPath) {
     requestPath === "/index.html" ||
     requestPath === "/login.html" ||
     requestPath === "/app.mjs" ||
+    requestPath === "/analysis-rules.mjs" ||
     requestPath === "/login.mjs" ||
     requestPath === "/styles.css" ||
     requestPath === "/README.md" ||

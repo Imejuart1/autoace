@@ -15,19 +15,22 @@ I worked through three stages:
    - spectral-band balance
    - transient noise cues
    - overlap proxies
-3. A hybrid model path that combines the acoustic baseline with Vercel-hosted pretrained Wav2Vec2 emotion evidence from Transformers.js.
+3. A hybrid model path that combines the acoustic baseline with Vercel-hosted pretrained emotion evidence from Transformers.js.
+4. A semantic path using local Whisper transcription and conservative transcript-emotion rules.
 
-The hybrid architecture retains the deterministic checks for audio quality, overlap, silence, and noise while using the pretrained model only as high-confidence tone evidence. This preserves privacy and keeps model-inference cost effectively zero when self-hosted.
+The hybrid architecture retains deterministic checks for audio quality, overlap, silence, and noise. Pretrained acoustic emotion and local transcript semantics affect tone only. This preserves privacy and avoids paid inference APIs while keeping technical audio fields independent from transcript content.
 
 ## Final Architecture
 
 - The hosted dashboard runs entirely on Vercel.
 - The dashboard is protected by a real session cookie and shared credentials.
 - The manifest CSV is validated in-browser.
-- Audio is decoded client-side and converted to mono samples.
+- Audio is decoded client-side. Duplicate stereo is detected automatically; genuinely separated channels are ranked internally as customer candidates.
 - Short-frame waveform and spectral features are extracted.
-- High-energy 18-second audio segments are resampled to 16 kHz and sent to the `/api/tone` endpoint, which runs a Transformers.js emotion classifier in the Vercel Node runtime.
+- High-energy 18-second audio segments are resampled to 16 kHz and sent to the authenticated `/api/tone` endpoint.
+- The endpoint runs `onnx-community/Speech-Emotion-Classification-ONNX` and `onnx-community/whisper-tiny.en` in the Vercel Node runtime.
 - The model's four broad outputs (`neutral`, `angry`, `happy`, `sad`) are fused conservatively with the acoustic baseline to produce the required AutoAce tone labels.
+- Transcript rules account for explicit dissatisfaction, confrontation, profanity, panic, positive language, and negation. Transcript evidence never determines noise, quality, overlap, or silence.
 - Deterministic rules produce the required output schema:
   - emotional tone
   - emotional intensity
@@ -41,39 +44,32 @@ The hybrid architecture retains the deterministic checks for audio quality, over
 
 ## Validation Results
 
-On the provided three labeled calls, the latest calibrated pass matches all three labels:
+The last measured three-call run before semantic fusion produced:
 
-- Tone macro F1 (observed classes): `1.000`
-- Tone macro F1 (all five classes): `0.600`
-- Tone accuracy: `1.000`
+- Tone macro F1 (observed classes): `0.667`
+- Tone macro F1 (all five classes): `0.400`
+- Tone accuracy: `0.667`
 - Noise accuracy: `1.000`
 - Quality accuracy: `1.000`
-- Overlap accuracy: `1.000`
-- Silence accuracy: `1.000`
 
-Confusion matrix:
-
-- `upset -> upset`
-- `neutral -> neutral`
-- `satisfied -> satisfied`
+The new semantic regression verifies that an acoustically `satisfied` prediction with the transcript "What do you mean ... Just fucking get back to me" resolves to `upset` with `high` intensity. Final three-call metrics must be regenerated after the semantic and overlap changes; no training-set or unmeasured 100% claim is reported.
 
 ## Cost Analysis
 
-- The hybrid inference path uses no paid external API.
-- Estimated model-inference cost: `$0.0000` per audio minute.
-- Assumption: the dashboard and model inference both run inside Vercel, with the model downloaded on first use and cached by the runtime.
-- This remains comfortably below the `$0.003` per audio minute ceiling.
+- The hybrid inference path uses no paid external model API.
+- Model-license/API charge: `$0.0000` per audio minute.
+- Vercel CPU and memory are infrastructure costs and must be estimated from measured invocation duration and the active Vercel plan before claiming total production cost.
+- Audio never leaves the authenticated application endpoint for inference.
 
 ## Latency Analysis
 
-Measured on the three labeled sample calls:
+Measured locally on one 18-second segment:
 
-- Total wall time: about `13.27 s`
-- Total audio: about `3.96 min`
-- Throughput: about `3.35 s` per audio minute
-- Equivalent speed: about `17.9x` real time on this machine
+- Cached emotion plus transcription endpoint: about `5.31 s`
+- First uncached model download and initialization: about `69.8 s`
+- Vercel function timeout: `300 s` to tolerate cold initialization
 
-The baseline runtime is dominated by client-side decoding and feature extraction. The hybrid model adds CPU inference time per selected 18-second segment; measure this separately in the Vercel runtime after deployment.
+The complete batch runtime must be remeasured after deployment because serverless cold starts and cache reuse materially affect latency.
 
 ## Failure Modes and Limitations
 
@@ -81,11 +77,12 @@ The baseline runtime is dominated by client-side decoding and feature extraction
 - Background-noise labels are heuristic and can overfit to spectral patterns that are not truly semantic noise categories.
 - Long-silence detection can be brittle on very long recordings with natural pauses.
 - The pretrained emotion model was trained on broad IEMOCAP emotions rather than the AutoAce label taxonomy. It should be calibrated on a larger dealership-call set before reporting generalization claims.
-- Customer-only tone requires diarization or speaker-role identification; the current implementation does not yet isolate the customer from other speakers.
+- Split stereo channels are ranked automatically, but mixed mono calls still lack guaranteed customer diarization.
+- Whisper transcription errors, profanity recognition errors, sarcasm, and negation outside the covered patterns can still produce semantic mistakes.
 
 ## Next Steps
 
 1. Measure the hybrid model against the three provided labeled calls and preserve only changes that improve leave-one-call-out behavior.
 2. Collect additional dealer-call labels and calibrate the five-class mapping on grouped validation folds.
-3. Add speaker diarization to isolate the customer before tone scoring.
+3. Add true speaker diarization and role classification for mixed mono calls.
 4. Keep the full stack on Vercel and refine the model-label calibration as more data becomes available.

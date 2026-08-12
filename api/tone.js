@@ -34,5 +34,5 @@ module.exports = async (req, res) => {
 };
 
 module.exports.config = {
-  maxDuration: 60,
+  maxDuration: 300,
 };
