@@ -26,6 +26,7 @@ import {
 } from "../public/overlap-detection.mjs";
 import {
   REQUIRED_PREDICTION_KEYS,
+  formatErrorMessage,
   validatePrediction,
 } from "../public/prediction-schema.mjs";
 
@@ -73,6 +74,9 @@ const validPrediction = {
 };
 assert.deepEqual(Object.keys(validPrediction), REQUIRED_PREDICTION_KEYS);
 assert.deepEqual(validatePrediction(validPrediction), []);
+assert.equal(formatErrorMessage({ error: "Tone model unavailable." }), "Tone model unavailable.");
+assert.equal(formatErrorMessage({ detail: "Retry later." }), "Retry later.");
+assert.equal(formatErrorMessage(new Error("Model timed out.")), "Model timed out.");
 assert.ok(
   validatePrediction({
     ...validPrediction,

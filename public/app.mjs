@@ -9,7 +9,7 @@ import {
 } from "/analysis-rules.mjs?v=6";
 import { analyzeAudioEvents } from "/yamnet-noise.mjs?v=3";
 import { analyzeMonoOverlap, analyzeStereoOverlap } from "/overlap-detection.mjs?v=1";
-import { validatePrediction } from "/prediction-schema.mjs?v=1";
+import { formatErrorMessage, validatePrediction } from "/prediction-schema.mjs?v=2";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -30,7 +30,7 @@ const SAMPLE_FREQUENCIES = [120, 240, 360, 480, 600, 800, 1200, 1600, 2400, 3200
 const TONE_MODEL_ENDPOINT = "/api/tone";
 const TONE_MODEL_SAMPLE_RATE = 16000;
 const TONE_MODEL_SEGMENT_SECONDS = 18;
-const TONE_MODEL_MAX_SEGMENTS = 5;
+const TONE_MODEL_MAX_SEGMENTS = 1;
 
 const state = {
   sourceFiles: [],
@@ -1227,40 +1227,66 @@ function isToneModelResponse(payload) {
 }
 
 async function requestToneModel(segment, sampleRate, languageHint = "") {
-  const response = await fetch(TONE_MODEL_ENDPOINT, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      sample_rate: sampleRate,
-      pcm16_base64: encodePcm16Base64(segment),
-      duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
-      language_hint: languageHint || undefined,
-    }),
+  const requestBody = JSON.stringify({
+    sample_rate: sampleRate,
+    pcm16_base64: encodePcm16Base64(segment),
+    duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
+    language_hint: languageHint || undefined,
   });
 
-  const payload = await readJsonResponse(response);
-  if (response.status === 503) {
-    state.toneModel.status = "unavailable";
-    state.toneModel.reason = payload?.error || payload?.detail || "Pretrained tone model is unavailable.";
-    return null;
-  }
-  if (!response.ok || !isToneModelResponse(payload)) {
-    throw new Error(payload?.error || payload?.detail || "Pretrained tone model returned an invalid response.");
+  let lastFailure = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(TONE_MODEL_ENDPOINT, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: requestBody,
+      });
+
+      const payload = await readJsonResponse(response);
+      if (!response.ok || !isToneModelResponse(payload)) {
+        const message = formatErrorMessage(
+          payload,
+          "Pretrained tone model is unavailable.",
+        );
+        state.toneModel.status = "unavailable";
+        state.toneModel.reason = message;
+        lastFailure = message;
+        if ((response.status >= 500 || response.status === 429) && attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          continue;
+        }
+        return null;
+      }
+
+      state.toneModel.status = "active";
+      if (payload.transcription_available) {
+        state.semanticModel.status = "active";
+        state.semanticModel.reason = "";
+      } else {
+        state.semanticModel.status = "unavailable";
+        state.semanticModel.reason = payload.transcription_reason || "Local transcription is unavailable.";
+      }
+      return payload;
+    } catch (error) {
+      lastFailure = formatErrorMessage(error, "Pretrained tone model is unavailable.");
+      state.toneModel.status = "unavailable";
+      state.toneModel.reason = lastFailure;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+      return null;
+    }
   }
 
-  state.toneModel.status = "active";
-  if (payload.transcription_available) {
-    state.semanticModel.status = "active";
-    state.semanticModel.reason = "";
-  } else {
-    state.semanticModel.status = "unavailable";
-    state.semanticModel.reason = payload.transcription_reason || "Local transcription is unavailable.";
-  }
-  return payload;
+  state.toneModel.status = "unavailable";
+  state.toneModel.reason = lastFailure || "Pretrained tone model is unavailable.";
+  return null;
 }
 
 async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = "") {
@@ -1987,12 +2013,7 @@ async function analyzeBatch() {
         };
         const modelEvidence = toneSelection.modelEvidence;
         const semanticEvidence = toneSelection.semanticEvidence;
-        const result = fuseTonePrediction(
-          baselineResult,
-          toneAnalysis.metrics,
-          modelEvidence,
-          semanticEvidence,
-        );
+        const result = fuseTonePrediction(baselineResult, toneAnalysis.metrics, modelEvidence, semanticEvidence);
         const schemaErrors = validatePrediction(result);
         if (schemaErrors.length) {
           throw new Error(`Prediction schema validation failed: ${schemaErrors.join(" ")}`);
@@ -2041,7 +2062,7 @@ async function analyzeBatch() {
         results.push({
           name: normalizeName(entry.name),
           status: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: formatErrorMessage(error, "Audio analysis failed."),
           prediction: null,
           metrics: null,
           truth: manifestRow ? parseGroundTruthJson(manifestRow.result_json) : null,
@@ -2086,7 +2107,7 @@ async function analyzeBatch() {
   } catch (error) {
     setStatus("Analysis failed", "error");
     setMessage(
-      `<div class="error">${error instanceof Error ? error.message : String(error)}</div>`,
+      `<div class="error">${formatErrorMessage(error, "Audio analysis failed.")}</div>`,
     );
     setProgress("Failed", 0);
     state.analysisTiming = {
