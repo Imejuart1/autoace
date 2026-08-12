@@ -1,11 +1,22 @@
 import os from "node:os";
 import path from "node:path";
 
-import { pipeline, env } from "@huggingface/transformers";
+import { LogitsProcessorList, pipeline, env } from "@huggingface/transformers";
+
+import {
+  languageNameFromCode,
+  transcriptionRouteForLanguage,
+  WhisperLanguageLogitsProcessor,
+} from "./language-routing.mjs";
 
 const MODEL_ID = process.env.AUTOACE_TONE_MODEL || "onnx-community/Speech-Emotion-Classification-ONNX";
 const MODEL_DTYPE = process.env.AUTOACE_TONE_MODEL_DTYPE || "q4";
-const ASR_MODEL_ID = process.env.AUTOACE_ASR_MODEL || "onnx-community/whisper-tiny.en";
+const ENGLISH_ASR_MODEL_ID =
+  process.env.AUTOACE_ENGLISH_ASR_MODEL ||
+  process.env.AUTOACE_ASR_MODEL ||
+  "onnx-community/whisper-tiny.en";
+const MULTILINGUAL_ASR_MODEL_ID =
+  process.env.AUTOACE_MULTILINGUAL_ASR_MODEL || "onnx-community/whisper-tiny";
 const ASR_MODEL_DTYPE = process.env.AUTOACE_ASR_MODEL_DTYPE || "q4";
 const ASR_ENABLED = process.env.AUTOACE_ASR_ENABLED !== "0";
 const CACHE_DIR = process.env.AUTOACE_TF_CACHE_DIR || path.join(os.tmpdir(), "autoace-hf-cache");
@@ -29,7 +40,9 @@ env.allowRemoteModels = true;
 env.allowLocalModels = true;
 
 let classifierPromise;
-let transcriberPromise;
+let englishTranscriberPromise;
+let multilingualTranscriberPromise;
+let inferenceQueue = Promise.resolve();
 
 function decodePcm16Base64(pcm16Base64) {
   try {
@@ -58,31 +71,118 @@ async function loadClassifier() {
   return classifierPromise;
 }
 
-async function loadTranscriber() {
+async function loadEnglishTranscriber() {
   if (!ASR_ENABLED) {
     return null;
   }
-  if (!transcriberPromise) {
-    transcriberPromise = pipeline("automatic-speech-recognition", ASR_MODEL_ID, {
+  if (!englishTranscriberPromise) {
+    englishTranscriberPromise = pipeline("automatic-speech-recognition", ENGLISH_ASR_MODEL_ID, {
       cache_dir: CACHE_DIR,
       device: "cpu",
       dtype: ASR_MODEL_DTYPE,
     });
   }
-  return transcriberPromise;
+  return englishTranscriberPromise;
 }
 
-async function transcribeAudio(audio) {
+async function loadMultilingualTranscriber() {
+  if (!ASR_ENABLED) {
+    return null;
+  }
+  if (!multilingualTranscriberPromise) {
+    multilingualTranscriberPromise = pipeline(
+      "automatic-speech-recognition",
+      MULTILINGUAL_ASR_MODEL_ID,
+      {
+        cache_dir: CACHE_DIR,
+        device: "cpu",
+        dtype: ASR_MODEL_DTYPE,
+      },
+    );
+  }
+  return multilingualTranscriberPromise;
+}
+
+async function releaseMultilingualTranscriber() {
+  if (!multilingualTranscriberPromise) {
+    return;
+  }
+  const transcriber = await multilingualTranscriberPromise;
+  multilingualTranscriberPromise = undefined;
+  await transcriber?.dispose?.();
+}
+
+function normalizeLanguageHint(languageHint) {
+  const code = String(languageHint || "").trim().toLowerCase();
+  return /^[a-z]{2,3}$/.test(code) ? code : "";
+}
+
+async function detectLanguage(audio, transcriber) {
+  const generationConfig = transcriber.model.generation_config || {};
+  const processor = new WhisperLanguageLogitsProcessor(generationConfig.lang_to_id);
+  const processors = new LogitsProcessorList();
+  processors.push(processor);
+  const features = await transcriber.processor(audio);
+
+  await transcriber.model.generate({
+    inputs: features.input_features,
+    decoder_input_ids: [[generationConfig.decoder_start_token_id]],
+    logits_processor: processors,
+    max_new_tokens: 1,
+  });
+
+  if (!processor.prediction?.code) {
+    throw new Error("Whisper could not identify the spoken language.");
+  }
+  return processor.prediction;
+}
+
+async function transcribeAudio(audio, languageHint = "") {
   try {
-    const transcriber = await loadTranscriber();
-    if (!transcriber) {
+    if (!ASR_ENABLED) {
       return { available: false, text: "", reason: "Local transcription is disabled." };
     }
-    const transcription = await transcriber(audio);
+
+    let detectedLanguage = null;
+    let languageCode = "";
+    let multilingualTranscriber = null;
+
+    if (languageHint) {
+      languageCode = normalizeLanguageHint(languageHint);
+    }
+
+    if (!languageCode) {
+      multilingualTranscriber ||= await loadMultilingualTranscriber();
+      if (!multilingualTranscriber) {
+        return { available: false, text: "", reason: "Local transcription is disabled." };
+      }
+      detectedLanguage = await detectLanguage(audio, multilingualTranscriber);
+      languageCode = detectedLanguage.code;
+    }
+
+    const route = transcriptionRouteForLanguage(languageCode);
+    if (route === "multilingual") {
+      multilingualTranscriber ||= await loadMultilingualTranscriber();
+    } else if (multilingualTranscriber) {
+      await releaseMultilingualTranscriber();
+      multilingualTranscriber = null;
+    }
+    const transcriber =
+      route === "english" ? await loadEnglishTranscriber() : multilingualTranscriber;
+    const transcription =
+      route === "english"
+        ? await transcriber(audio)
+        : await transcriber(audio, { language: languageCode, task: "translate" });
+
     return {
       available: true,
       text: String(transcription?.text || "").trim(),
-      model: ASR_MODEL_ID,
+      model: route === "english" ? ENGLISH_ASR_MODEL_ID : MULTILINGUAL_ASR_MODEL_ID,
+      route,
+      languageCode,
+      languageName: languageNameFromCode(languageCode),
+      languageConfidence: detectedLanguage?.confidence ?? null,
+      translatedToEnglish: route === "multilingual",
     };
   } catch (error) {
     return {
@@ -122,14 +222,16 @@ function normalizeScores(predictions) {
 export function getToneModelStatus() {
   return {
     model: MODEL_ID,
-    asrModel: ASR_ENABLED ? ASR_MODEL_ID : null,
+    englishAsrModel: ASR_ENABLED ? ENGLISH_ASR_MODEL_ID : null,
+    multilingualAsrModel: ASR_ENABLED ? MULTILINGUAL_ASR_MODEL_ID : null,
     cacheDir: CACHE_DIR,
     loaded: Boolean(classifierPromise),
-    transcriberLoaded: Boolean(transcriberPromise),
+    englishTranscriberLoaded: Boolean(englishTranscriberPromise),
+    multilingualTranscriberLoaded: Boolean(multilingualTranscriberPromise),
   };
 }
 
-export async function classifyToneRequest(payload = {}) {
+async function classifyTonePayload(payload = {}) {
   const sampleRate = Number(payload.sample_rate);
   const durationSeconds = Number(payload.duration_seconds);
 
@@ -149,7 +251,7 @@ export async function classifyToneRequest(payload = {}) {
   const labels = normalizeScores(predictions);
   const ordered = Object.entries(labels).sort((left, right) => right[1] - left[1]);
   const [topLabel, confidence] = ordered[0];
-  const transcription = await transcribeAudio(audio);
+  const transcription = await transcribeAudio(audio, payload.language_hint);
 
   return {
     model: MODEL_ID,
@@ -159,6 +261,20 @@ export async function classifyToneRequest(payload = {}) {
     transcript: transcription.text,
     transcription_available: transcription.available,
     transcription_model: transcription.model || null,
+    transcription_route: transcription.route || null,
+    transcription_translated_to_english: Boolean(transcription.translatedToEnglish),
+    detected_language_code: transcription.languageCode || null,
+    detected_language_name: transcription.languageName || null,
+    detected_language_confidence:
+      typeof transcription.languageConfidence === "number"
+        ? Number(transcription.languageConfidence.toFixed(4))
+        : null,
     transcription_reason: transcription.reason || "",
   };
+}
+
+export function classifyToneRequest(payload = {}) {
+  const request = inferenceQueue.then(() => classifyTonePayload(payload));
+  inferenceQueue = request.catch(() => undefined);
+  return request;
 }

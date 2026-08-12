@@ -1,3 +1,29 @@
+export function detectBackgroundNoise({
+  segmentDensity,
+  noiseFloor,
+  noiseRatio,
+  signalToNoise,
+  flatness,
+  transientRate,
+}) {
+  const persistentBackground =
+    noiseFloor > 0.00075 || noiseRatio > 0.16 || signalToNoise < 6;
+  const broadbandBackground =
+    flatness > 0.22 && (noiseFloor > 0.00035 || noiseRatio > 0.06);
+  const transientBackground =
+    transientRate > 0.025 && (noiseFloor > 0.0003 || noiseRatio > 0.05);
+  const fragmentedSpeechWithBackground =
+    segmentDensity > 1.2 &&
+    (noiseFloor > 0.0007 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
+
+  return (
+    persistentBackground ||
+    broadbandBackground ||
+    transientBackground ||
+    fragmentedSpeechWithBackground
+  );
+}
+
 export function classifyNoiseSeverity({
   noisePresent,
   segmentDensity,

@@ -1,13 +1,44 @@
 import assert from "node:assert/strict";
 
+import { Tensor } from "@huggingface/transformers";
+
 import {
   applySemanticTone,
   classifyNoiseSeverity,
   classifyTranscriptEmotion,
+  detectBackgroundNoise,
   detectSpeakerOverlap,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
 } from "../public/analysis-rules.mjs";
+import {
+  languageCodeFromToken,
+  languageNameFromCode,
+  transcriptionRouteForLanguage,
+  WhisperLanguageLogitsProcessor,
+} from "../language-routing.mjs";
+
+assert.equal(languageCodeFromToken("<|en|>"), "en");
+assert.equal(languageCodeFromToken("<|fr|>"), "fr");
+assert.equal(languageCodeFromToken("not-a-language-token"), "");
+assert.equal(transcriptionRouteForLanguage("en"), "english");
+assert.equal(transcriptionRouteForLanguage("fr"), "multilingual");
+assert.match(languageNameFromCode("en"), /English/i);
+
+const languageProcessor = new WhisperLanguageLogitsProcessor({
+  "<|en|>": 1,
+  "<|fr|>": 2,
+});
+const languageLogits = new Tensor(
+  "float32",
+  new Float32Array([9, 1, 4, 8]),
+  [1, 4],
+);
+languageProcessor._call([], languageLogits);
+assert.equal(languageProcessor.prediction.code, "fr");
+assert.ok(languageProcessor.prediction.confidence > 0.94);
+assert.equal(languageLogits.data[0], -Infinity);
+assert.equal(languageLogits.data[3], -Infinity);
 
 const quietFeatures = {
   noisePresent: false,
@@ -18,6 +49,29 @@ const quietFeatures = {
   flatness: 0.08,
   transientRate: 0.001,
 };
+
+assert.equal(
+  detectBackgroundNoise({
+    segmentDensity: 3.0507,
+    noiseFloor: 0.0006496,
+    noiseRatio: 0.0107,
+    signalToNoise: 93.416,
+    flatness: 0.0998,
+    transientRate: 0,
+  }),
+  false,
+);
+assert.equal(
+  detectBackgroundNoise({
+    segmentDensity: 2.83,
+    noiseFloor: 0.0009165,
+    noiseRatio: 0.0093,
+    signalToNoise: 107.65,
+    flatness: 0.088,
+    transientRate: 0.0003,
+  }),
+  true,
+);
 
 assert.equal(classifyNoiseSeverity(quietFeatures), "none");
 assert.equal(classifyNoiseSeverity({ ...quietFeatures, noisePresent: true }), "low");

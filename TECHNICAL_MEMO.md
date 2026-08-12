@@ -28,7 +28,7 @@ The hybrid architecture retains deterministic checks for audio quality, overlap,
 - Audio is decoded client-side. Duplicate stereo is detected automatically; genuinely separated channels are ranked internally as customer candidates.
 - Short-frame waveform and spectral features are extracted.
 - High-energy 18-second audio segments are resampled to 16 kHz and sent to the authenticated `/api/tone` endpoint.
-- The endpoint runs `onnx-community/Speech-Emotion-Classification-ONNX` and `onnx-community/whisper-tiny.en` in the Vercel Node runtime.
+- The endpoint runs `onnx-community/Speech-Emotion-Classification-ONNX` plus automatic Whisper language routing in the Vercel Node runtime. Multilingual Whisper identifies the language; English uses `onnx-community/whisper-tiny.en`, while other supported languages use `onnx-community/whisper-tiny` with translation to English for semantic rules.
 - The model's four broad outputs (`neutral`, `angry`, `happy`, `sad`) are fused conservatively with the acoustic baseline to produce the required AutoAce tone labels.
 - Transcript rules account for explicit dissatisfaction, confrontation, profanity, panic, positive language, and negation. Transcript evidence never determines noise, quality, overlap, or silence.
 - Deterministic rules produce the required output schema:

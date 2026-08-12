@@ -2,10 +2,11 @@ import {
   applySemanticTone,
   classifyNoiseSeverity,
   classifyTranscriptEmotion,
+  detectBackgroundNoise,
   detectSpeakerOverlap,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
-} from "/analysis-rules.mjs?v=4";
+} from "/analysis-rules.mjs?v=5";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -688,6 +689,8 @@ function detectNoiseType({
   noiseFloor,
   harmonicity,
   pitchCount,
+  noiseRatio,
+  signalToNoise,
 }) {
   if (speechSegmentCount > 250 || noiseFloor > 0.0008) {
     return "sharp static";
@@ -698,7 +701,12 @@ function detectNoiseType({
   if (lowFreqRatio > 0.48 && flatness > 0.42) {
     return "road noise";
   }
-  if (lowFreqRatio > 0.42 && flatness <= 0.42 && highFreqRatio < 0.22) {
+  if (
+    lowFreqRatio > 0.42 &&
+    flatness <= 0.42 &&
+    highFreqRatio < 0.22 &&
+    (noiseRatio > 0.06 || signalToNoise < 12)
+  ) {
     return "wind";
   }
   if (harmonicity > 0.18 && pitchCount > 6 && highFreqRatio < 0.35) {
@@ -944,8 +952,14 @@ function analyzeSamples(samples, sampleRate) {
   const flatness = flatnessValues.length ? mean(flatnessValues) : 0;
   const harmonicity = frameFeatures.length ? mean(frameFeatures.map((entry) => entry.harmonicity)) : 0;
   const transientRate = frameFeatures.length ? transientFrames / frameFeatures.length : 0;
-  const noisePresent =
-    segmentDensity > 1.2 || noiseFloor > 0.00075 || noiseRatio > 0.16 || flatness > 0.18 || transientRate > 0.02;
+  const noisePresent = detectBackgroundNoise({
+    segmentDensity,
+    noiseFloor,
+    noiseRatio,
+    signalToNoise,
+    flatness,
+    transientRate,
+  });
 
   const noiseSeverity = classifyNoiseSeverity({
     noisePresent,
@@ -967,6 +981,8 @@ function analyzeSamples(samples, sampleRate) {
       noiseFloor,
       harmonicity,
       pitchCount: voicedPitchCount,
+      noiseRatio,
+      signalToNoise,
     })
     : "";
 
@@ -1189,7 +1205,7 @@ function isToneModelResponse(payload) {
   );
 }
 
-async function requestToneModel(segment, sampleRate) {
+async function requestToneModel(segment, sampleRate, languageHint = "") {
   const response = await fetch(TONE_MODEL_ENDPOINT, {
     method: "POST",
     credentials: "include",
@@ -1201,6 +1217,7 @@ async function requestToneModel(segment, sampleRate) {
       sample_rate: sampleRate,
       pcm16_base64: encodePcm16Base64(segment),
       duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
+      language_hint: languageHint || undefined,
     }),
   });
 
@@ -1225,7 +1242,7 @@ async function requestToneModel(segment, sampleRate) {
   return payload;
 }
 
-async function analyzePretrainedTone(samples, sampleRate) {
+async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = "") {
   if (state.toneModel.status === "unavailable") {
     return null;
   }
@@ -1238,11 +1255,20 @@ async function analyzePretrainedTone(samples, sampleRate) {
 
   const combined = { neu: 0, ang: 0, hap: 0, sad: 0 };
   const transcripts = [];
+  const detectedLanguages = new Map();
   let totalWeight = 0;
   let modelName = "";
+  let languageHint = initialLanguageHint;
+  let transcriptionRoute = "";
+  let transcriptionModel = "";
+  let translatedToEnglish = false;
 
   for (const segment of segments) {
-    const prediction = await requestToneModel(segment.samples, TONE_MODEL_SAMPLE_RATE);
+    const prediction = await requestToneModel(
+      segment.samples,
+      TONE_MODEL_SAMPLE_RATE,
+      languageHint,
+    );
     if (!prediction) {
       return null;
     }
@@ -1257,6 +1283,16 @@ async function analyzePretrainedTone(samples, sampleRate) {
     );
     totalWeight += weight;
     modelName = prediction.model || modelName;
+    if (prediction.detected_language_code) {
+      languageHint ||= prediction.detected_language_code;
+      detectedLanguages.set(
+        prediction.detected_language_code,
+        prediction.detected_language_name || prediction.detected_language_code,
+      );
+    }
+    transcriptionRoute = prediction.transcription_route || transcriptionRoute;
+    transcriptionModel = prediction.transcription_model || transcriptionModel;
+    translatedToEnglish ||= Boolean(prediction.transcription_translated_to_english);
     if (prediction.transcript) {
       transcripts.push(String(prediction.transcript).trim());
     }
@@ -1277,6 +1313,11 @@ async function analyzePretrainedTone(samples, sampleRate) {
     margin: ordered[0][1] - ordered[1][1],
     segments: segments.length,
     transcript: transcripts.join(" ").trim(),
+    detectedLanguageCode: languageHint || null,
+    detectedLanguageName: detectedLanguages.get(languageHint) || null,
+    transcriptionRoute: transcriptionRoute || null,
+    transcriptionModel: transcriptionModel || null,
+    translatedToEnglish,
   };
 }
 
@@ -1587,6 +1628,7 @@ function renderOperationalSummary() {
   const cards = [
     ["Tone engine", state.toneModel.status === "active" ? "Hybrid pretrained model" : "Acoustic fallback"],
     ["Semantic engine", state.semanticModel.status === "active" ? "Local transcription active" : "Acoustic-only fallback"],
+    ["Language routing", "Automatic English / multilingual"],
     ["Tone source", timing.toneScopes?.join(", ") || "Mixed call"],
     ["Audio minutes", audioMinutes.toFixed(2)],
     ["Wall time", `${wallSeconds.toFixed(2)} s`],
@@ -1866,13 +1908,19 @@ async function analyzeBatch() {
         const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
         const toneCandidates = buildToneCandidates(audioBuffer, mixedSamples);
         const evaluatedCandidates = [];
+        let fileLanguageHint = "";
 
         for (const candidate of toneCandidates) {
           const toneAnalysis =
             candidate.samples === mixedSamples
               ? technicalAnalysis
               : analyzeSamples(candidate.samples, audioBuffer.sampleRate);
-          const modelEvidence = await analyzePretrainedTone(candidate.samples, audioBuffer.sampleRate);
+          const modelEvidence = await analyzePretrainedTone(
+            candidate.samples,
+            audioBuffer.sampleRate,
+            fileLanguageHint,
+          );
+          fileLanguageHint ||= modelEvidence?.detectedLanguageCode || "";
           const semanticEvidence = classifyTranscriptEmotion(modelEvidence?.transcript || "");
           evaluatedCandidates.push({
             ...candidate,

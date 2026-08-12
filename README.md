@@ -59,7 +59,10 @@ If you prefer, you can also run `node server.js` directly.
 
 - The acoustic baseline estimates tone, noise, overlap, silence, and quality from decoded waveform features.
 - The hosted tone model runs `onnx-community/Speech-Emotion-Classification-ONNX` on selected 16 kHz speech segments and blends high-confidence `neutral`, `angry`, `happy`, and `sad` evidence with the baseline.
-- `onnx-community/whisper-tiny.en` transcribes the same selected segments. Deterministic semantic rules use dissatisfaction, confrontation, profanity, panic, positive language, and negation as additional tone evidence.
+- Multilingual Whisper first identifies the spoken language. English segments are transcribed by `onnx-community/whisper-tiny.en`; other supported languages use `onnx-community/whisper-tiny` with English translation so the same conservative semantic rules can evaluate the wording.
+- The detected language is reused across the remaining selected segments of a clip, avoiding repeated language-identification work.
+- Split-channel candidates also share the call-level language hint. For English, the multilingual detection session is released before the English-only model is loaded to keep serverless memory bounded.
+- Tone endpoint inference is serialized within each serverless instance so one request cannot release a model session while another request is using it.
 - The models are downloaded on first use and cached by the Vercel runtime; production-call audio is sent only to the authenticated application endpoint, not to an LLM or paid inference API.
 - The emotion model is evidence, not ground truth: it was trained on four broad IEMOCAP classes, so the app retains rule-based safeguards for the five AutoAce labels.
 
