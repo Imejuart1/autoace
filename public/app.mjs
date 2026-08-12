@@ -821,7 +821,7 @@ function deriveQuality({ noiseSeverity, clippingRate, noiseRatio, signalToNoise,
   return "clear";
 }
 
-function analyzeSamples(samples, sampleRate) {
+function analyzeSamples(samples, sampleRate, overlapContext = {}) {
   const frameSize = Math.max(512, Math.round(sampleRate * 0.03));
   const hopSize = Math.max(256, Math.round(sampleRate * 0.01));
   const frames = buildFrameSlices(samples, frameSize, hopSize);
@@ -1008,7 +1008,9 @@ function analyzeSamples(samples, sampleRate) {
     meanSpeechZcr,
     speechRatio: totalSpeechFrames / Math.max(1, frames.length),
     voicedPitchRatio: voicedPitchCount / Math.max(1, speechFrames.length),
+    pitchConfidenceMean,
     transientRate,
+    ...overlapContext,
   });
 
   const quality = deriveQuality({
@@ -1126,6 +1128,141 @@ function channelsAreEffectivelyDuplicate(audioBuffer, leftIndex, rightIndex) {
   }
 
   return differenceEnergy / Math.max(signalEnergy, 1e-12) < 0.0001;
+}
+
+function computeFrameCorrelation(leftFrame, rightFrame) {
+  const limit = Math.min(leftFrame.length, rightFrame.length);
+  if (!limit) {
+    return 0;
+  }
+
+  let leftMean = 0;
+  let rightMean = 0;
+  for (let index = 0; index < limit; index += 1) {
+    leftMean += leftFrame[index];
+    rightMean += rightFrame[index];
+  }
+  leftMean /= limit;
+  rightMean /= limit;
+
+  let numerator = 0;
+  let leftEnergy = 0;
+  let rightEnergy = 0;
+  for (let index = 0; index < limit; index += 1) {
+    const leftValue = leftFrame[index] - leftMean;
+    const rightValue = rightFrame[index] - rightMean;
+    numerator += leftValue * rightValue;
+    leftEnergy += leftValue * leftValue;
+    rightEnergy += rightValue * rightValue;
+  }
+
+  return numerator / (Math.sqrt(leftEnergy * rightEnergy) + 1e-12);
+}
+
+function measureStereoOverlapContext(audioBuffer, sampleRate) {
+  const channelCount = audioBuffer.numberOfChannels;
+  if (channelCount < 2) {
+    return {
+      available: false,
+      dualMono: false,
+      channelCount,
+    };
+  }
+
+  const dualMono = channelsAreEffectivelyDuplicate(audioBuffer, 0, 1);
+  if (dualMono) {
+    return {
+      available: false,
+      dualMono: true,
+      channelCount,
+    };
+  }
+
+  const frameSize = Math.max(512, Math.round(sampleRate * 0.03));
+  const hopSize = Math.max(256, Math.round(sampleRate * 0.01));
+  const window = hannWindow(frameSize);
+  const leftFrames = buildFrameSlices(audioBuffer.getChannelData(0), frameSize, hopSize);
+  const rightFrames = buildFrameSlices(audioBuffer.getChannelData(1), frameSize, hopSize);
+  const frameCount = Math.min(leftFrames.length, rightFrames.length);
+
+  if (!frameCount) {
+    return {
+      available: false,
+      dualMono: false,
+      channelCount,
+    };
+  }
+
+  const leftRmsValues = [];
+  const rightRmsValues = [];
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    const leftWindowed = new Float32Array(frameSize);
+    const rightWindowed = new Float32Array(frameSize);
+    const leftFrame = leftFrames[frameIndex];
+    const rightFrame = rightFrames[frameIndex];
+    for (let sampleIndex = 0; sampleIndex < frameSize; sampleIndex += 1) {
+      leftWindowed[sampleIndex] = leftFrame[sampleIndex] * window[sampleIndex];
+      rightWindowed[sampleIndex] = rightFrame[sampleIndex] * window[sampleIndex];
+    }
+    leftRmsValues.push(computeRms(leftWindowed));
+    rightRmsValues.push(computeRms(rightWindowed));
+  }
+
+  const leftQuiet = percentile(leftRmsValues, 0.2);
+  const rightQuiet = percentile(rightRmsValues, 0.2);
+  const leftSpeechThreshold = Math.max(leftQuiet * 2.15, percentile(leftRmsValues, 0.65) * 0.62, 0.0012);
+  const rightSpeechThreshold = Math.max(rightQuiet * 2.15, percentile(rightRmsValues, 0.65) * 0.62, 0.0012);
+
+  let activeUnionFrames = 0;
+  let simultaneousVoicedFrames = 0;
+  let correlationSum = 0;
+  let imbalanceSum = 0;
+  let correlatedFrames = 0;
+
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    const leftActive = leftRmsValues[frameIndex] >= leftSpeechThreshold;
+    const rightActive = rightRmsValues[frameIndex] >= rightSpeechThreshold;
+    const unionActive = leftActive || rightActive;
+    const simultaneousActive = leftActive && rightActive;
+
+    if (unionActive) {
+      activeUnionFrames += 1;
+    }
+    if (!simultaneousActive) {
+      continue;
+    }
+
+    simultaneousVoicedFrames += 1;
+    const correlation = computeFrameCorrelation(leftFrames[frameIndex], rightFrames[frameIndex]);
+    correlationSum += Math.max(-1, Math.min(1, correlation));
+    imbalanceSum +=
+      Math.abs(leftRmsValues[frameIndex] - rightRmsValues[frameIndex]) /
+      Math.max(leftRmsValues[frameIndex] + rightRmsValues[frameIndex], 1e-6);
+    correlatedFrames += 1;
+  }
+
+  const simultaneousVoicedRatio = simultaneousVoicedFrames / Math.max(1, activeUnionFrames);
+  const simultaneousCoverage = simultaneousVoicedFrames / Math.max(1, frameCount);
+  const meanCorrelation = correlatedFrames ? correlationSum / correlatedFrames : 1;
+  const meanEnergyImbalance = correlatedFrames ? imbalanceSum / correlatedFrames : 0;
+  const overlapScore = clamp(
+    ((simultaneousVoicedRatio - 0.05) / 0.23) * 0.48 +
+      (((1 - Math.max(-1, Math.min(1, meanCorrelation))) - 0.08) / 0.34) * 0.34 +
+      ((meanEnergyImbalance - 0.08) / 0.3) * 0.18,
+    0,
+    1,
+  );
+
+  return {
+    available: true,
+    dualMono: false,
+    channelCount,
+    simultaneousVoicedRatio,
+    simultaneousCoverage,
+    channelCorrelation: Math.max(-1, Math.min(1, meanCorrelation)),
+    channelEnergyImbalance: clamp(meanEnergyImbalance, 0, 1),
+    overlapScore,
+  };
 }
 
 function buildToneCandidates(audioBuffer, mixedSamples) {
@@ -1913,7 +2050,12 @@ async function analyzeBatch() {
         const audioBuffer = await decodeAudioBuffer(entry.file);
         totalAudioSeconds += audioBuffer.duration || 0;
         const mixedSamples = toMonoArray(audioBuffer);
-        const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
+        const stereoOverlapContext = measureStereoOverlapContext(audioBuffer, audioBuffer.sampleRate);
+        const technicalAnalysis = analyzeSamples(
+          mixedSamples,
+          audioBuffer.sampleRate,
+          stereoOverlapContext,
+        );
         setProgress(`Classifying sounds in ${entry.name}`, progress + 0.01);
         const audioEvents = await analyzeAudioEvents(mixedSamples, audioBuffer.sampleRate);
         if (audioEvents.available) {
@@ -1936,7 +2078,7 @@ async function analyzeBatch() {
           const toneAnalysis =
             candidate.samples === mixedSamples
               ? technicalAnalysis
-              : analyzeSamples(candidate.samples, audioBuffer.sampleRate);
+              : analyzeSamples(candidate.samples, audioBuffer.sampleRate, stereoOverlapContext);
           const modelEvidence = await analyzePretrainedTone(
             candidate.samples,
             audioBuffer.sampleRate,
@@ -1978,6 +2120,7 @@ async function analyzeBatch() {
         const metrics = {
           ...technicalAnalysis.metrics,
           audioEvents,
+          stereoOverlapContext,
           toneScope: toneSelection.scope,
           speakerSelection: {
             strategy: toneCandidates.length > 1 ? "automatic_channel_ranking" : "mixed_audio_fallback",

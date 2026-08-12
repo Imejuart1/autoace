@@ -106,18 +106,75 @@ export function detectSpeakerOverlap({
   speechRatio,
   voicedPitchRatio,
   transientRate,
+  pitchConfidenceMean,
+  channelCount = 1,
+  dualMono = false,
+  simultaneousVoicedRatio = 0,
+  channelCorrelation = 1,
+  channelEnergyImbalance = 0,
 }) {
-  const competingVoices = harmonicity > 0.08 && pitchStd > 24 && meanSpeechZcr > 0.025;
-  const densePolyphonicSpeech =
-    segmentDensity > 1.8 &&
-    pitchStd > 36 &&
-    meanSpeechZcr > 0.035 &&
-    speechRatio > 0.45 &&
-    voicedPitchRatio > 0.3;
-  const sustainedComplexVoicing =
-    harmonicity > 0.12 && pitchStd > 32 && speechRatio > 0.6 && transientRate > 0.03;
+  const clamp01 = (value) => Math.max(0, Math.min(1, value));
+  const scale = (value, min, max) => {
+    if (max <= min) {
+      return 0;
+    }
+    return clamp01((value - min) / (max - min));
+  };
 
-  return competingVoices || densePolyphonicSpeech || sustainedComplexVoicing;
+  const monoScore = clamp01(
+    scale(segmentDensity, 1.05, 2.7) * 0.18 +
+      scale(pitchStd, 16, 45) * 0.16 +
+      scale(meanSpeechZcr, 0.018, 0.055) * 0.14 +
+      scale(speechRatio, 0.42, 0.86) * 0.16 +
+      scale(voicedPitchRatio, 0.22, 0.62) * 0.12 +
+      scale(transientRate, 0.008, 0.04) * 0.08 +
+      scale(1 - clamp01(pitchConfidenceMean ?? 0.5), 0.18, 0.65) * 0.08 +
+      scale(harmonicity, 0.04, 0.16) * 0.08,
+  );
+
+  const crowdedMonoSpeech =
+    segmentDensity > 1.65 &&
+    speechRatio > 0.58 &&
+    pitchStd > 24 &&
+    meanSpeechZcr > 0.025 &&
+    voicedPitchRatio > 0.32;
+  const unstablePitchTracking =
+    typeof pitchConfidenceMean === "number" &&
+    pitchConfidenceMean < 0.46 &&
+    speechRatio > 0.5 &&
+    pitchStd > 20 &&
+    meanSpeechZcr > 0.02;
+  const sustainedComplexVoicing =
+    harmonicity > 0.09 &&
+    pitchStd > 28 &&
+    speechRatio > 0.62 &&
+    transientRate > 0.02 &&
+    voicedPitchRatio > 0.28;
+
+  const stereoScore =
+    channelCount >= 2 && !dualMono
+      ? clamp01(
+          scale(simultaneousVoicedRatio, 0.06, 0.28) * 0.5 +
+            scale(1 - clamp01(channelCorrelation), 0.08, 0.42) * 0.33 +
+            scale(channelEnergyImbalance, 0.08, 0.38) * 0.17,
+        )
+      : 0;
+  const stereoStrong =
+    channelCount >= 2 &&
+    !dualMono &&
+    simultaneousVoicedRatio > 0.08 &&
+    channelCorrelation < 0.88 &&
+    (channelEnergyImbalance > 0.12 || transientRate > 0.02 || segmentDensity > 1.1);
+
+  return (
+    stereoStrong ||
+    stereoScore >= 0.58 ||
+    (stereoScore >= 0.35 && monoScore >= 0.5) ||
+    monoScore >= 0.62 ||
+    crowdedMonoSpeech ||
+    unstablePitchTracking ||
+    sustainedComplexVoicing
+  );
 }
 
 export function scoreCustomerCandidate({ speechRatio, baselineTone, modelEvidence, semanticEvidence }) {

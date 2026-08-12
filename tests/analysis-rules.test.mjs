@@ -188,6 +188,44 @@ assert.equal(
   false,
 );
 
+assert.equal(
+  detectSpeakerOverlap({
+    segmentDensity: 1.08,
+    harmonicity: 0.03,
+    pitchStd: 11,
+    meanSpeechZcr: 0.019,
+    speechRatio: 0.41,
+    voicedPitchRatio: 0.18,
+    transientRate: 0.008,
+    pitchConfidenceMean: 0.29,
+    channelCount: 2,
+    dualMono: false,
+    simultaneousVoicedRatio: 0.19,
+    channelCorrelation: 0.58,
+    channelEnergyImbalance: 0.27,
+  }),
+  true,
+);
+
+assert.equal(
+  detectSpeakerOverlap({
+    segmentDensity: 1.08,
+    harmonicity: 0.03,
+    pitchStd: 11,
+    meanSpeechZcr: 0.019,
+    speechRatio: 0.41,
+    voicedPitchRatio: 0.18,
+    transientRate: 0.008,
+    pitchConfidenceMean: 0.29,
+    channelCount: 2,
+    dualMono: true,
+    simultaneousVoicedRatio: 0.19,
+    channelCorrelation: 0.58,
+    channelEnergyImbalance: 0.27,
+  }),
+  false,
+);
+
 assert.deepEqual(
   classifyTranscriptEmotion("What do you mean, how can you help me? Just fucking get back to me!"),
   {
