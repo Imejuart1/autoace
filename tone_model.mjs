@@ -66,9 +66,6 @@ async function loadClassifier() {
       cache_dir: CACHE_DIR,
       device: "cpu",
       dtype: MODEL_DTYPE,
-    }).catch((error) => {
-      classifierPromise = undefined;
-      throw error;
     });
   }
   return classifierPromise;
@@ -83,9 +80,6 @@ async function loadEnglishTranscriber() {
       cache_dir: CACHE_DIR,
       device: "cpu",
       dtype: ASR_MODEL_DTYPE,
-    }).catch((error) => {
-      englishTranscriberPromise = undefined;
-      throw error;
     });
   }
   return englishTranscriberPromise;
@@ -104,30 +98,9 @@ async function loadMultilingualTranscriber() {
         device: "cpu",
         dtype: ASR_MODEL_DTYPE,
       },
-    ).catch((error) => {
-      multilingualTranscriberPromise = undefined;
-      throw error;
-    });
+    );
   }
   return multilingualTranscriberPromise;
-}
-
-async function releaseClassifier() {
-  if (!classifierPromise) {
-    return;
-  }
-  const classifier = await classifierPromise;
-  classifierPromise = undefined;
-  await classifier?.dispose?.();
-}
-
-async function releaseEnglishTranscriber() {
-  if (!englishTranscriberPromise) {
-    return;
-  }
-  const transcriber = await englishTranscriberPromise;
-  englishTranscriberPromise = undefined;
-  await transcriber?.dispose?.();
 }
 
 async function releaseMultilingualTranscriber() {
@@ -217,8 +190,6 @@ async function transcribeAudio(audio, languageHint = "") {
       text: "",
       reason: error instanceof Error ? error.message : "Local transcription failed.",
     };
-  } finally {
-    await Promise.allSettled([releaseEnglishTranscriber(), releaseMultilingualTranscriber()]);
   }
 }
 
@@ -276,34 +247,30 @@ async function classifyTonePayload(payload = {}) {
 
   const audio = decodePcm16Base64(payload.pcm16_base64);
   const classifier = await loadClassifier();
-  try {
-    const predictions = await classifier(audio, { top_k: 7, sampling_rate: sampleRate });
-    const labels = normalizeScores(predictions);
-    const ordered = Object.entries(labels).sort((left, right) => right[1] - left[1]);
-    const [topLabel, confidence] = ordered[0];
-    const transcription = await transcribeAudio(audio, payload.language_hint);
+  const predictions = await classifier(audio, { top_k: 7, sampling_rate: sampleRate });
+  const labels = normalizeScores(predictions);
+  const ordered = Object.entries(labels).sort((left, right) => right[1] - left[1]);
+  const [topLabel, confidence] = ordered[0];
+  const transcription = await transcribeAudio(audio, payload.language_hint);
 
-    return {
-      model: MODEL_ID,
-      labels,
-      top_label: topLabel,
-      confidence: Number(confidence.toFixed(4)),
-      transcript: transcription.text,
-      transcription_available: transcription.available,
-      transcription_model: transcription.model || null,
-      transcription_route: transcription.route || null,
-      transcription_translated_to_english: Boolean(transcription.translatedToEnglish),
-      detected_language_code: transcription.languageCode || null,
-      detected_language_name: transcription.languageName || null,
-      detected_language_confidence:
-        typeof transcription.languageConfidence === "number"
-          ? Number(transcription.languageConfidence.toFixed(4))
-          : null,
-      transcription_reason: transcription.reason || "",
-    };
-  } finally {
-    await releaseClassifier();
-  }
+  return {
+    model: MODEL_ID,
+    labels,
+    top_label: topLabel,
+    confidence: Number(confidence.toFixed(4)),
+    transcript: transcription.text,
+    transcription_available: transcription.available,
+    transcription_model: transcription.model || null,
+    transcription_route: transcription.route || null,
+    transcription_translated_to_english: Boolean(transcription.translatedToEnglish),
+    detected_language_code: transcription.languageCode || null,
+    detected_language_name: transcription.languageName || null,
+    detected_language_confidence:
+      typeof transcription.languageConfidence === "number"
+        ? Number(transcription.languageConfidence.toFixed(4))
+        : null,
+    transcription_reason: transcription.reason || "",
+  };
 }
 
 export function classifyToneRequest(payload = {}) {

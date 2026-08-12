@@ -1,0 +1,2 @@
+name,result_json
+call_001.wav,"{""emotional_tone"":""neutral"",""emotional_intensity"":""low"",""background_noise_present"":false,""background_noise_type"":"""",""background_noise_severity"":""none"",""audio_quality"":""clear"",""speaker_overlap_present"":false,""long_silence_present"":false,""confidence"":0.82}"

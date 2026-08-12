@@ -3,5 +3,3 @@ node_modules
 deps
 tmp
 ml_service
-.codex-doc-review
-.model-cache

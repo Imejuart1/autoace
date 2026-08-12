@@ -1,19 +1,18 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { forwardToneRequest } = require("./model_proxy");
-const {
-  DEFAULT_PASSWORD: AUTH_PASSWORD,
-  DEFAULT_USERNAME: AUTH_USERNAME,
-  SESSION_TTL_MS,
-  authenticate,
-  buildCookieHeader,
-  createSessionCookie,
-  readSession,
-} = require("./api/_auth");
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 3000);
+const SESSION_COOKIE_NAME = "autoace_session";
+const SESSION_TTL_MS = Number(process.env.AUTOACE_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
+const COOKIE_SECURE = String(process.env.AUTOACE_COOKIE_SECURE || "").trim() === "1";
+const AUTH_USERNAME = process.env.AUTOACE_USERNAME || "autoace";
+const AUTH_PASSWORD = process.env.AUTOACE_PASSWORD || "AutoAce2026!";
+
+const sessions = new Map();
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -35,8 +34,6 @@ const MIME_TYPES = new Map([
   [".flac", "audio/flac"],
   [".webm", "audio/webm"],
   [".opus", "audio/opus"],
-  [".onnx", "application/octet-stream"],
-  [".wasm", "application/wasm"],
 ]);
 
 function sendJson(res, statusCode, payload, headers = {}) {
@@ -58,6 +55,38 @@ function sendText(res, statusCode, text, contentType = "text/plain; charset=utf-
   res.end(text);
 }
 
+function parseCookies(cookieHeader = "") {
+  const cookies = {};
+  for (const part of cookieHeader.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex < 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, eqIndex).trim();
+    const value = trimmed.slice(eqIndex + 1).trim();
+    cookies[key] = decodeURIComponent(value);
+  }
+  return cookies;
+}
+
+function createCookie(name, value, options = {}) {
+  const attributes = [`${name}=${encodeURIComponent(value)}`];
+  attributes.push("Path=/");
+  attributes.push("HttpOnly");
+  attributes.push("SameSite=Lax");
+  if (typeof options.maxAge === "number") {
+    attributes.push(`Max-Age=${Math.max(0, Math.floor(options.maxAge))}`);
+  }
+  if (options.secure) {
+    attributes.push("Secure");
+  }
+  return attributes.join("; ");
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -69,8 +98,51 @@ function readRequestBody(req) {
   });
 }
 
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function authenticate(username, password) {
+  return safeEqual(username, AUTH_USERNAME) && safeEqual(password, AUTH_PASSWORD);
+}
+
+function createSession(username) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  sessions.set(token, { username, expiresAt });
+  return token;
+}
+
 function getSessionFromRequest(req) {
-  return readSession(req);
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) {
+    return null;
+  }
+  const session = sessions.get(token);
+  if (!session) {
+    return null;
+  }
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  session.expiresAt = Date.now() + SESSION_TTL_MS;
+  return { token, ...session };
+}
+
+function clearExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of sessions.entries()) {
+    if (session.expiresAt <= now) {
+      sessions.delete(token);
+    }
+  }
 }
 
 function hasPublicFile(requestPath) {
@@ -79,16 +151,11 @@ function hasPublicFile(requestPath) {
     requestPath === "/login.html" ||
     requestPath === "/app.mjs" ||
     requestPath === "/analysis-rules.mjs" ||
-    requestPath === "/yamnet-noise.mjs" ||
-    requestPath === "/overlap-detection.mjs" ||
-    requestPath === "/prediction-schema.mjs" ||
     requestPath === "/login.mjs" ||
     requestPath === "/styles.css" ||
     requestPath === "/README.md" ||
     requestPath === "/TECHNICAL_MEMO.md" ||
-    requestPath.startsWith("/assets/") ||
-    requestPath.startsWith("/models/") ||
-    requestPath.startsWith("/vendor/")
+    requestPath.startsWith("/assets/")
   );
 }
 
@@ -213,7 +280,7 @@ async function handleLogin(req, res) {
     return;
   }
 
-  const token = createSessionCookie(username);
+  const token = createSession(username);
   sendJson(
     res,
     200,
@@ -222,7 +289,10 @@ async function handleLogin(req, res) {
       username,
     },
     {
-      "Set-Cookie": buildCookieHeader(token, SESSION_TTL_MS / 1000),
+      "Set-Cookie": createCookie(SESSION_COOKIE_NAME, token, {
+        maxAge: SESSION_TTL_MS / 1000,
+        secure: COOKIE_SECURE,
+      }),
     },
   );
 }
@@ -237,17 +307,26 @@ function handleMe(req, res) {
   sendJson(res, 200, {
     authenticated: true,
     username: session.username,
-    expiresInSeconds: Math.max(0, Math.round((session.exp - Date.now()) / 1000)),
+    expiresInSeconds: Math.max(0, Math.round((session.expiresAt - Date.now()) / 1000)),
   });
 }
 
 function handleLogout(req, res) {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (token) {
+    sessions.delete(token);
+  }
+
   sendJson(
     res,
     200,
     { ok: true },
     {
-      "Set-Cookie": buildCookieHeader("", 0),
+      "Set-Cookie": createCookie(SESSION_COOKIE_NAME, "", {
+        maxAge: 0,
+        secure: COOKIE_SECURE,
+      }),
     },
   );
 }
@@ -272,6 +351,8 @@ async function handleTone(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  clearExpiredSessions();
+
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/me" && req.method === "GET") {

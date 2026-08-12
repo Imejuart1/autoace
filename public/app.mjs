@@ -3,13 +3,10 @@ import {
   classifyNoiseSeverity,
   classifyTranscriptEmotion,
   detectBackgroundNoise,
-  fuseAudioEventNoise,
+  detectSpeakerOverlap,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
-} from "/analysis-rules.mjs?v=6";
-import { analyzeAudioEvents } from "/yamnet-noise.mjs?v=3";
-import { analyzeMonoOverlap, analyzeStereoOverlap } from "/overlap-detection.mjs?v=1";
-import { formatErrorMessage, validatePrediction } from "/prediction-schema.mjs?v=2";
+} from "/analysis-rules.mjs?v=5";
 
 const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   ".wav",
@@ -30,7 +27,7 @@ const SAMPLE_FREQUENCIES = [120, 240, 360, 480, 600, 800, 1200, 1600, 2400, 3200
 const TONE_MODEL_ENDPOINT = "/api/tone";
 const TONE_MODEL_SAMPLE_RATE = 16000;
 const TONE_MODEL_SEGMENT_SECONDS = 18;
-const TONE_MODEL_MAX_SEGMENTS = 1;
+const TONE_MODEL_MAX_SEGMENTS = 5;
 
 const state = {
   sourceFiles: [],
@@ -48,10 +45,6 @@ const state = {
     reason: "",
   },
   semanticModel: {
-    status: "unknown",
-    reason: "",
-  },
-  audioEventModel: {
     status: "unknown",
     reason: "",
   },
@@ -1002,6 +995,16 @@ function analyzeSamples(samples, sampleRate) {
     1,
   );
 
+  const overlapPresent = detectSpeakerOverlap({
+    segmentDensity,
+    harmonicity,
+    pitchStd,
+    meanSpeechZcr,
+    speechRatio: totalSpeechFrames / Math.max(1, frames.length),
+    voicedPitchRatio: voicedPitchCount / Math.max(1, speechFrames.length),
+    transientRate,
+  });
+
   const quality = deriveQuality({
     noiseSeverity,
     clippingRate: clipRate,
@@ -1045,7 +1048,7 @@ function analyzeSamples(samples, sampleRate) {
       background_noise_type: noiseType,
       background_noise_severity: noiseSeverity,
       audio_quality: quality,
-      speaker_overlap_present: false,
+      speaker_overlap_present: Boolean(overlapPresent),
       long_silence_present: Boolean(longSilencePresent),
       confidence: Number(confidence.toFixed(2)),
     },
@@ -1133,30 +1136,6 @@ function buildToneCandidates(audioBuffer, mixedSamples) {
   }));
 }
 
-function analyzeSpeakerOverlap(audioBuffer, mixedSamples) {
-  if (audioBuffer.numberOfChannels >= 2) {
-    const stereoAnalysis = analyzeStereoOverlap(
-      audioBuffer.getChannelData(0),
-      audioBuffer.getChannelData(1),
-      audioBuffer.sampleRate,
-    );
-    if (stereoAnalysis.available) {
-      return stereoAnalysis;
-    }
-
-    return {
-      ...analyzeMonoOverlap(mixedSamples, audioBuffer.sampleRate),
-      channelLayout: stereoAnalysis.duplicateChannels ? "dual_mono" : "mixed_stereo",
-      stereoFallback: stereoAnalysis,
-    };
-  }
-
-  return {
-    ...analyzeMonoOverlap(mixedSamples, audioBuffer.sampleRate),
-    channelLayout: "mono",
-  };
-}
-
 function resampleAudio(samples, sourceRate, targetRate) {
   if (sourceRate === targetRate) {
     return samples;
@@ -1227,66 +1206,40 @@ function isToneModelResponse(payload) {
 }
 
 async function requestToneModel(segment, sampleRate, languageHint = "") {
-  const requestBody = JSON.stringify({
-    sample_rate: sampleRate,
-    pcm16_base64: encodePcm16Base64(segment),
-    duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
-    language_hint: languageHint || undefined,
+  const response = await fetch(TONE_MODEL_ENDPOINT, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sample_rate: sampleRate,
+      pcm16_base64: encodePcm16Base64(segment),
+      duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
+      language_hint: languageHint || undefined,
+    }),
   });
 
-  let lastFailure = "";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await fetch(TONE_MODEL_ENDPOINT, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: requestBody,
-      });
-
-      const payload = await readJsonResponse(response);
-      if (!response.ok || !isToneModelResponse(payload)) {
-        const message = formatErrorMessage(
-          payload,
-          "Pretrained tone model is unavailable.",
-        );
-        state.toneModel.status = "unavailable";
-        state.toneModel.reason = message;
-        lastFailure = message;
-        if ((response.status >= 500 || response.status === 429) && attempt === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          continue;
-        }
-        return null;
-      }
-
-      state.toneModel.status = "active";
-      if (payload.transcription_available) {
-        state.semanticModel.status = "active";
-        state.semanticModel.reason = "";
-      } else {
-        state.semanticModel.status = "unavailable";
-        state.semanticModel.reason = payload.transcription_reason || "Local transcription is unavailable.";
-      }
-      return payload;
-    } catch (error) {
-      lastFailure = formatErrorMessage(error, "Pretrained tone model is unavailable.");
-      state.toneModel.status = "unavailable";
-      state.toneModel.reason = lastFailure;
-      if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        continue;
-      }
-      return null;
-    }
+  const payload = await readJsonResponse(response);
+  if (response.status === 503) {
+    state.toneModel.status = "unavailable";
+    state.toneModel.reason = payload?.error || payload?.detail || "Pretrained tone model is unavailable.";
+    return null;
+  }
+  if (!response.ok || !isToneModelResponse(payload)) {
+    throw new Error(payload?.error || payload?.detail || "Pretrained tone model returned an invalid response.");
   }
 
-  state.toneModel.status = "unavailable";
-  state.toneModel.reason = lastFailure || "Pretrained tone model is unavailable.";
-  return null;
+  state.toneModel.status = "active";
+  if (payload.transcription_available) {
+    state.semanticModel.status = "active";
+    state.semanticModel.reason = "";
+  } else {
+    state.semanticModel.status = "unavailable";
+    state.semanticModel.reason = payload.transcription_reason || "Local transcription is unavailable.";
+  }
+  return payload;
 }
 
 async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = "") {
@@ -1675,7 +1628,6 @@ function renderOperationalSummary() {
   const cards = [
     ["Tone engine", state.toneModel.status === "active" ? "Hybrid pretrained model" : "Acoustic fallback"],
     ["Semantic engine", state.semanticModel.status === "active" ? "Local transcription active" : "Acoustic-only fallback"],
-    ["Noise engine", state.audioEventModel.status === "active" ? "YAMNet + acoustic fusion" : "Acoustic fallback"],
     ["Language routing", "Automatic English / multilingual"],
     ["Tone source", timing.toneScopes?.join(", ") || "Mixed call"],
     ["Audio minutes", audioMinutes.toFixed(2)],
@@ -1897,7 +1849,6 @@ async function analyzeBatch() {
   syncDownloadLinks();
   state.toneModel = { status: "unknown", reason: "" };
   state.semanticModel = { status: "unknown", reason: "" };
-  state.audioEventModel = { status: "unknown", reason: "" };
   setProgress("Preparing batch", 0.02);
   setStatus("Preparing batch", "info");
   setMessage("Reading uploaded files and validating the manifest...");
@@ -1955,23 +1906,6 @@ async function analyzeBatch() {
         totalAudioSeconds += audioBuffer.duration || 0;
         const mixedSamples = toMonoArray(audioBuffer);
         const technicalAnalysis = analyzeSamples(mixedSamples, audioBuffer.sampleRate);
-        const overlapAnalysis = analyzeSpeakerOverlap(audioBuffer, mixedSamples);
-        technicalAnalysis.result.speaker_overlap_present = Boolean(overlapAnalysis.present);
-        technicalAnalysis.metrics.overlap = overlapAnalysis;
-        setProgress(`Classifying sounds in ${entry.name}`, progress + 0.01);
-        const audioEvents = await analyzeAudioEvents(mixedSamples, audioBuffer.sampleRate);
-        if (audioEvents.available) {
-          state.audioEventModel.status = "active";
-          state.audioEventModel.reason = "";
-          technicalAnalysis.result = fuseAudioEventNoise(
-            technicalAnalysis.result,
-            technicalAnalysis.metrics,
-            audioEvents,
-          );
-        } else if (state.audioEventModel.status !== "active") {
-          state.audioEventModel.status = "unavailable";
-          state.audioEventModel.reason = audioEvents.reason || "YAMNet was unavailable.";
-        }
         const toneCandidates = buildToneCandidates(audioBuffer, mixedSamples);
         const evaluatedCandidates = [];
         let fileLanguageHint = "";
@@ -2013,14 +1947,14 @@ async function analyzeBatch() {
         };
         const modelEvidence = toneSelection.modelEvidence;
         const semanticEvidence = toneSelection.semanticEvidence;
-        const result = fuseTonePrediction(baselineResult, toneAnalysis.metrics, modelEvidence, semanticEvidence);
-        const schemaErrors = validatePrediction(result);
-        if (schemaErrors.length) {
-          throw new Error(`Prediction schema validation failed: ${schemaErrors.join(" ")}`);
-        }
+        const result = fuseTonePrediction(
+          baselineResult,
+          toneAnalysis.metrics,
+          modelEvidence,
+          semanticEvidence,
+        );
         const metrics = {
           ...technicalAnalysis.metrics,
-          audioEvents,
           toneScope: toneSelection.scope,
           speakerSelection: {
             strategy: toneCandidates.length > 1 ? "automatic_channel_ranking" : "mixed_audio_fallback",
@@ -2062,7 +1996,7 @@ async function analyzeBatch() {
         results.push({
           name: normalizeName(entry.name),
           status: "error",
-          error: formatErrorMessage(error, "Audio analysis failed."),
+          error: error instanceof Error ? error.message : String(error),
           prediction: null,
           metrics: null,
           truth: manifestRow ? parseGroundTruthJson(manifestRow.result_json) : null,
@@ -2107,7 +2041,7 @@ async function analyzeBatch() {
   } catch (error) {
     setStatus("Analysis failed", "error");
     setMessage(
-      `<div class="error">${formatErrorMessage(error, "Audio analysis failed.")}</div>`,
+      `<div class="error">${error instanceof Error ? error.message : String(error)}</div>`,
     );
     setProgress("Failed", 0);
     state.analysisTiming = {
