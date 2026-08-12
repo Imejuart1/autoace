@@ -8,6 +8,7 @@ import {
   classifyTranscriptEmotion,
   detectBackgroundNoise,
   detectSpeakerOverlap,
+  fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
 } from "../public/analysis-rules.mjs";
@@ -60,6 +61,96 @@ assert.equal(
     transientRate: 0,
   }),
   false,
+);
+
+const cleanSantaMetrics = {
+  signalToNoise: 93.416,
+  noiseRatio: 0.0107,
+  transientRate: 0,
+};
+const cleanSantaResult = {
+  background_noise_present: false,
+  background_noise_type: "",
+  background_noise_severity: "none",
+};
+assert.deepEqual(
+  fuseAudioEventNoise(cleanSantaResult, cleanSantaMetrics, {
+    available: true,
+    candidate: {
+      type: "music",
+      confidence: 0.00057,
+      meanConfidence: 0.00034,
+      persistence: 0,
+      backgroundActivity: 0,
+    },
+    candidates: [
+      { type: "music", confidence: 0.00057 },
+      { type: "TV", confidence: 0.00032 },
+    ],
+  }),
+  cleanSantaResult,
+);
+assert.deepEqual(
+  fuseAudioEventNoise(
+    cleanSantaResult,
+    {
+      segmentDensity: 2.5,
+      noiseFloor: 0.0004,
+      noiseRatio: 0.03,
+      signalToNoise: 30,
+      flatness: 0.1,
+      transientRate: 0.002,
+    },
+    {
+      available: true,
+      candidate: {
+        type: "TV",
+        confidence: 0.023,
+        meanConfidence: 0.0086,
+        persistence: 0,
+        backgroundActivity: 0.15,
+      },
+      candidates: [
+        { type: "TV", confidence: 0.023 },
+        { type: "alarm or siren", confidence: 0.0024 },
+        { type: "music", confidence: 0.0011 },
+      ],
+    },
+  ),
+  {
+    background_noise_present: true,
+    background_noise_type: "TV",
+    background_noise_severity: "medium",
+  },
+);
+assert.deepEqual(
+  fuseAudioEventNoise(
+    {
+      background_noise_present: true,
+      background_noise_type: "background noise",
+      background_noise_severity: "medium",
+    },
+    { signalToNoise: 8, noiseRatio: 0.2, transientRate: 0.02 },
+    {
+      available: true,
+      candidate: {
+        type: "TV",
+        confidence: 0.42,
+        meanConfidence: 0.16,
+        persistence: 0.3,
+        backgroundActivity: 0.5,
+      },
+      candidates: [
+        { type: "TV", confidence: 0.42 },
+        { type: "music", confidence: 0.08 },
+      ],
+    },
+  ),
+  {
+    background_noise_present: true,
+    background_noise_type: "TV",
+    background_noise_severity: "medium",
+  },
 );
 assert.equal(
   detectBackgroundNoise({
