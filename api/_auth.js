@@ -76,7 +76,10 @@ function buildCookieHeader(value, maxAgeSeconds) {
   if (typeof maxAgeSeconds === "number") {
     parts.push(`Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`);
   }
-  if (String(process.env.AUTOACE_COOKIE_SECURE || "").trim() === "1") {
+  const secureCookie =
+    String(process.env.AUTOACE_COOKIE_SECURE || "").trim() === "1" ||
+    String(process.env.VERCEL_ENV || "").trim().toLowerCase() === "production";
+  if (secureCookie) {
     parts.push("Secure");
   }
   return parts.join("; ");
@@ -112,7 +115,17 @@ function readJsonBody(req) {
 }
 
 function authenticate(username, password) {
-  return String(username || "").trim() === DEFAULT_USERNAME && String(password || "") === DEFAULT_PASSWORD;
+  const suppliedUsername = Buffer.from(String(username || "").trim());
+  const expectedUsername = Buffer.from(DEFAULT_USERNAME);
+  const suppliedPassword = Buffer.from(String(password || ""));
+  const expectedPassword = Buffer.from(DEFAULT_PASSWORD);
+  const usernameMatches =
+    suppliedUsername.length === expectedUsername.length &&
+    crypto.timingSafeEqual(suppliedUsername, expectedUsername);
+  const passwordMatches =
+    suppliedPassword.length === expectedPassword.length &&
+    crypto.timingSafeEqual(suppliedPassword, expectedPassword);
+  return usernameMatches && passwordMatches;
 }
 
 module.exports = {

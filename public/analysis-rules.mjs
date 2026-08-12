@@ -98,28 +98,6 @@ export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
   };
 }
 
-export function detectSpeakerOverlap({
-  segmentDensity,
-  harmonicity,
-  pitchStd,
-  meanSpeechZcr,
-  speechRatio,
-  voicedPitchRatio,
-  transientRate,
-}) {
-  const competingVoices = harmonicity > 0.08 && pitchStd > 24 && meanSpeechZcr > 0.025;
-  const densePolyphonicSpeech =
-    segmentDensity > 1.8 &&
-    pitchStd > 36 &&
-    meanSpeechZcr > 0.035 &&
-    speechRatio > 0.45 &&
-    voicedPitchRatio > 0.3;
-  const sustainedComplexVoicing =
-    harmonicity > 0.12 && pitchStd > 32 && speechRatio > 0.6 && transientRate > 0.03;
-
-  return competingVoices || densePolyphonicSpeech || sustainedComplexVoicing;
-}
-
 export function scoreCustomerCandidate({ speechRatio, baselineTone, modelEvidence, semanticEvidence }) {
   const speechCoverage = Math.max(0, Math.min(1, speechRatio / 0.35));
   let acousticScore;
