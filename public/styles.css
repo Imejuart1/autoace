@@ -353,7 +353,7 @@ h1 {
   height: 100%;
   border: 0;
   border-radius: 0;
-  background: linear-gradient(135deg, var(--accent), #ff8a6b);
+  background: linear-gradient(135deg, var(--accent), #c3a9a2);
   color: #ff0000;
   display: grid;
   place-items: center;
