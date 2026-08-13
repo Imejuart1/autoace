@@ -40,6 +40,8 @@ const state = {
   results: [],
   rawRows: [],
   processing: false,
+  analysisRunId: 0,
+  activeAnalysisController: null,
   report: null,
   downloadUrls: [],
   analysisTiming: null,
@@ -339,7 +341,22 @@ function setCounters() {
   dom.errorCount.textContent = String(errorCount);
 }
 
+function isCurrentAnalysisRun(runId) {
+  return state.analysisRunId === runId && !state.activeAnalysisController?.signal.aborted;
+}
+
+function cancelActiveAnalysis() {
+  state.analysisRunId += 1;
+  state.activeAnalysisController?.abort();
+  state.activeAnalysisController = null;
+  state.processing = false;
+  if (dom.analyzeButton) {
+    dom.analyzeButton.disabled = false;
+  }
+}
+
 function clearState(keepMessage = false) {
+  cancelActiveAnalysis();
   for (const url of state.downloadUrls) {
     URL.revokeObjectURL(url);
   }
@@ -349,7 +366,6 @@ function clearState(keepMessage = false) {
   state.manifestMap = new Map();
   state.results = [];
   state.rawRows = [];
-  state.processing = false;
   state.report = null;
   state.downloadUrls = [];
   state.analysisTiming = null;
@@ -1495,10 +1511,11 @@ function isToneModelResponse(payload) {
   );
 }
 
-async function requestToneModel(segment, sampleRate, languageHint = "") {
+async function requestToneModel(segment, sampleRate, languageHint = "", signal = undefined) {
   const response = await fetch(TONE_MODEL_ENDPOINT, {
     method: "POST",
     credentials: "include",
+    signal,
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -1533,7 +1550,7 @@ async function requestToneModel(segment, sampleRate, languageHint = "") {
   return payload;
 }
 
-async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = "") {
+async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = "", signal = undefined) {
   if (state.toneModel.status === "unavailable") {
     return null;
   }
@@ -1559,6 +1576,7 @@ async function analyzePretrainedTone(samples, sampleRate, initialLanguageHint = 
       segment.samples,
       TONE_MODEL_SAMPLE_RATE,
       languageHint,
+      signal,
     );
     if (!prediction) {
       return null;
@@ -2172,6 +2190,10 @@ async function analyzeBatch() {
   if (state.processing) {
     return;
   }
+  const runId = state.analysisRunId + 1;
+  const analysisController = new AbortController();
+  state.analysisRunId = runId;
+  state.activeAnalysisController = analysisController;
   state.processing = true;
   dom.analyzeButton.disabled = true;
   syncDownloadLinks();
@@ -2187,6 +2209,9 @@ async function analyzeBatch() {
 
   try {
     const { audioEntries, manifestRows, sourceFiles } = await getBatchEntries();
+    if (!isCurrentAnalysisRun(runId)) {
+      return;
+    }
     state.sourceFiles = sourceFiles;
     state.audioFiles = audioEntries;
     state.manifestRows = manifestRows;
@@ -2232,6 +2257,9 @@ async function analyzeBatch() {
       const manifestRow = state.manifestMap.get(normalizeName(entry.name).toLowerCase());
       try {
         const audioBuffer = await decodeAudioBuffer(entry.file);
+        if (!isCurrentAnalysisRun(runId)) {
+          return;
+        }
         totalAudioSeconds += audioBuffer.duration || 0;
         const mixedSamples = toMonoArray(audioBuffer);
         const stereoOverlapContext = measureStereoOverlapContext(audioBuffer, audioBuffer.sampleRate);
@@ -2242,6 +2270,9 @@ async function analyzeBatch() {
         );
         setProgress(`Classifying sounds in ${entry.name}`, progress + 0.01);
         const audioEvents = await analyzeAudioEvents(mixedSamples, audioBuffer.sampleRate);
+        if (!isCurrentAnalysisRun(runId)) {
+          return;
+        }
         if (audioEvents.available) {
           state.audioEventModel.status = "active";
           state.audioEventModel.reason = "";
@@ -2267,7 +2298,11 @@ async function analyzeBatch() {
             candidate.samples,
             audioBuffer.sampleRate,
             fileLanguageHint,
+            analysisController.signal,
           );
+          if (!isCurrentAnalysisRun(runId)) {
+            return;
+          }
           fileLanguageHint ||= modelEvidence?.detectedLanguageCode || "";
           const semanticEvidence = classifyTranscriptEmotion(modelEvidence?.transcript || "");
           evaluatedCandidates.push({
@@ -2357,6 +2392,9 @@ async function analyzeBatch() {
           source: entry.path || entry.name,
         });
       } catch (error) {
+        if (!isCurrentAnalysisRun(runId)) {
+          return;
+        }
         results.push({
           name: normalizeName(entry.name),
           status: "error",
@@ -2369,6 +2407,9 @@ async function analyzeBatch() {
       }
     }
 
+    if (!isCurrentAnalysisRun(runId)) {
+      return;
+    }
     state.results = results;
     state.analysisTiming = {
       wallTimeMs: Date.now() - analysisStart,
@@ -2403,6 +2444,9 @@ async function analyzeBatch() {
     setProgress("Done", 1);
     scrollToResultsPanel();
   } catch (error) {
+    if (!isCurrentAnalysisRun(runId)) {
+      return;
+    }
     setStatus("Analysis failed", "error");
     setMessage(
       `<div class="error">${error instanceof Error ? error.message : String(error)}</div>`,
@@ -2415,8 +2459,11 @@ async function analyzeBatch() {
     };
     renderOperationalSummary();
   } finally {
-    state.processing = false;
-    dom.analyzeButton.disabled = false;
+    if (isCurrentAnalysisRun(runId)) {
+      state.processing = false;
+      state.activeAnalysisController = null;
+      dom.analyzeButton.disabled = false;
+    }
   }
 }
 
