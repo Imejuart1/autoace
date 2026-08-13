@@ -6,15 +6,25 @@ export function detectBackgroundNoise({
   flatness,
   transientRate,
 }) {
+  // Raised threshold from 0.00075 to 0.002 to ignore natural mic room tone
   const persistentBackground =
-    noiseFloor > 0.00075 || noiseRatio > 0.16 || signalToNoise < 6;
+    noiseFloor > 0.002 || noiseRatio > 0.16 || signalToNoise < 6;
+    
   const broadbandBackground =
-    flatness > 0.22 && (noiseFloor > 0.00035 || noiseRatio > 0.06);
+    flatness > 0.22 && (noiseFloor > 0.001 || noiseRatio > 0.06);
+    
   const transientBackground =
-    transientRate > 0.025 && (noiseFloor > 0.0003 || noiseRatio > 0.05);
+    transientRate > 0.025 && (noiseFloor > 0.001 || noiseRatio > 0.05);
+    
+  // Raised threshold from 0.0007 to 0.0018
   const fragmentedSpeechWithBackground =
     segmentDensity > 1.2 &&
-    (noiseFloor > 0.0007 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
+    (noiseFloor > 0.0018 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
+
+  console.log("--- detectBackgroundNoise Debug ---", JSON.stringify({
+    metrics: { noiseFloor, noiseRatio, signalToNoise, flatness, transientRate },
+    triggers: { persistentBackground, broadbandBackground, transientBackground, fragmentedSpeechWithBackground }
+  }, null, 2));
 
   return (
     persistentBackground ||
@@ -69,18 +79,29 @@ export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
       .map((entry) => entry.confidence || 0),
   );
   const eventDominance = candidate.confidence / competingConfidence;
+  
   const strongEvent =
     candidate.confidence >= 0.5 && candidate.persistence >= 0.18;
+    
+  // Raised confidence requirement from 0.015 to 0.02
   const quietBackgroundEvent =
-    candidate.confidence >= 0.015 &&
+    candidate.confidence >= 0.02 &&
     candidate.meanConfidence >= 0.003 &&
     candidate.backgroundActivity >= 0.08 &&
     eventDominance >= 3;
+    
   const corroboratedEvent =
     acousticPresent &&
     candidate.confidence >= 0.015 &&
     candidate.meanConfidence >= 0.003 &&
     eventDominance >= 2;
+
+  console.log("--- fuseAudioEventNoise Debug ---", JSON.stringify({
+    yamnetCandidate: candidate.type,
+    confidence: candidate.confidence,
+    dominance: eventDominance,
+    flags: { strongEvent, quietBackgroundEvent, corroboratedEvent }
+  }, null, 2));
 
   if (!(corroboratedEvent || strongEvent || quietBackgroundEvent)) {
     return acousticResult;
@@ -146,7 +167,7 @@ export function detectSpeakerOverlap({
 
   console.log("Overlap Scores Computed:", { stereoScore, stereoStrong, monoOverlapScore });
   const result = Boolean(stereoStrong || stereoScore >= 0.50 || monoOverlapScore >= 0.42);
-  console.log("detectSpeakerOverlap Final Result:", result);
+  //console.log("detectSpeakerOverlap Final Result:", result);
   return result;
 }
 
@@ -171,7 +192,7 @@ export function detectSemanticOverlap(transcript) {
   });
 
   const result = matchInterruption || matchRecommendation || matchFragments;
-  console.log("detectSemanticOverlap Final Result:", result);
+  //console.log("detectSemanticOverlap Final Result:", result);
   return result;
 }
 
