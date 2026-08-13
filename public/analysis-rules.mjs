@@ -1,35 +1,101 @@
 export function detectBackgroundNoise({
+  segmentDensity,
   noiseFloor,
+  noiseRatio,
   signalToNoise,
   flatness,
   transientRate,
 }) {
-  const meaningfulFloor = noiseFloor >= 0.0004;
-  const restrictedSnr = signalToNoise < 7.5;
-  const broadbandArtifacts = flatness > 0.28 && transientRate > 0.025;
-  
-  return (meaningfulFloor && restrictedSnr) || broadbandArtifacts;
+  const persistentBackground =
+    noiseFloor > 0.00075 || noiseRatio > 0.16 || signalToNoise < 6;
+  const broadbandBackground =
+    flatness > 0.22 && (noiseFloor > 0.00035 || noiseRatio > 0.06);
+  const transientBackground =
+    transientRate > 0.025 && (noiseFloor > 0.0003 || noiseRatio > 0.05);
+  const fragmentedSpeechWithBackground =
+    segmentDensity > 1.2 &&
+    (noiseFloor > 0.0007 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
+
+  return (
+    persistentBackground ||
+    broadbandBackground ||
+    transientBackground ||
+    fragmentedSpeechWithBackground
+  );
 }
 
 export function classifyNoiseSeverity({
   noisePresent,
-  signalToNoise,
+  segmentDensity,
   noiseFloor,
+  noiseRatio,
+  signalToNoise,
+  flatness,
+  transientRate,
 }) {
   if (!noisePresent) {
     return "none";
   }
-  if (signalToNoise < 2.0 || noiseFloor > 0.003) {
+
+  const materiallyImpaired =
+    signalToNoise < 1.35 ||
+    noiseRatio > 0.75 ||
+    noiseFloor > 0.005 ||
+    (flatness > 0.6 && transientRate > 0.12 && noiseRatio > 0.5);
+  if (materiallyImpaired) {
     return "high";
   }
-  if (signalToNoise < 4.5 || noiseFloor > 0.001) {
-    return "medium";
-  }
-  return "low";
+
+  const intermittentlyImpaired =
+    segmentDensity > 2.3 ||
+    noiseFloor > 0.0012 ||
+    noiseRatio > 0.32 ||
+    signalToNoise < 3 ||
+    (flatness > 0.35 && transientRate > 0.03);
+  return intermittentlyImpaired ? "medium" : "low";
 }
+
 export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
-  console.log("--- fuseAudioEventNoise Disabled ---");
-  return acousticResult;
+  if (!audioEvents?.available || !audioEvents.candidate) {
+    return acousticResult;
+  }
+
+  const candidate = audioEvents.candidate;
+  const acousticPresent = Boolean(acousticResult.background_noise_present);
+  const competingConfidence = Math.max(
+    0.0001,
+    ...(audioEvents.candidates || [])
+      .filter((entry) => entry.type !== candidate.type)
+      .map((entry) => entry.confidence || 0),
+  );
+  const eventDominance = candidate.confidence / competingConfidence;
+  const strongEvent =
+    candidate.confidence >= 0.5 && candidate.persistence >= 0.18;
+  const quietBackgroundEvent =
+    candidate.confidence >= 0.015 &&
+    candidate.meanConfidence >= 0.003 &&
+    candidate.backgroundActivity >= 0.08 &&
+    eventDominance >= 3;
+  const corroboratedEvent =
+    acousticPresent &&
+    candidate.confidence >= 0.015 &&
+    candidate.meanConfidence >= 0.003 &&
+    eventDominance >= 2;
+
+  if (!(corroboratedEvent || strongEvent || quietBackgroundEvent)) {
+    return acousticResult;
+  }
+
+  const severity = acousticPresent
+    ? acousticResult.background_noise_severity
+    : classifyNoiseSeverity({ ...metrics, noisePresent: true });
+
+  return {
+    ...acousticResult,
+    background_noise_present: true,
+    background_noise_type: candidate.type,
+    background_noise_severity: severity,
+  };
 }
 
 export function detectSpeakerOverlap({
