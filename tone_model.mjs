@@ -44,6 +44,36 @@ let englishTranscriberPromise;
 let multilingualTranscriberPromise;
 let inferenceQueue = Promise.resolve();
 
+async function disposePipeline(pipelinePromise) {
+  if (!pipelinePromise) {
+    return;
+  }
+  try {
+    const instance = await pipelinePromise;
+    await instance?.dispose?.();
+  } catch {
+    // Best-effort cleanup: a failed model load should not block the next request.
+  }
+}
+
+export async function resetToneModels() {
+  const classifier = classifierPromise;
+  const englishTranscriber = englishTranscriberPromise;
+  const multilingualTranscriber = multilingualTranscriberPromise;
+
+  classifierPromise = undefined;
+  englishTranscriberPromise = undefined;
+  multilingualTranscriberPromise = undefined;
+
+  await Promise.allSettled([
+    disposePipeline(classifier),
+    disposePipeline(englishTranscriber),
+    disposePipeline(multilingualTranscriber),
+  ]);
+
+  globalThis.gc?.();
+}
+
 function decodePcm16Base64(pcm16Base64) {
   try {
     const raw = Buffer.from(String(pcm16Base64 || ""), "base64");
@@ -273,8 +303,18 @@ async function classifyTonePayload(payload = {}) {
   };
 }
 
+async function classifyTonePayloadWithCleanup(payload = {}) {
+  try {
+    return await classifyTonePayload(payload);
+  } finally {
+    if (payload.release_after === true) {
+      await resetToneModels();
+    }
+  }
+}
+
 export function classifyToneRequest(payload = {}) {
-  const request = inferenceQueue.then(() => classifyTonePayload(payload));
+  const request = inferenceQueue.then(() => classifyTonePayloadWithCleanup(payload));
   inferenceQueue = request.catch(() => undefined);
   return request;
 }

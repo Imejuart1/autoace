@@ -1492,6 +1492,7 @@ async function requestToneModel(segment, sampleRate, languageHint = "") {
       pcm16_base64: encodePcm16Base64(segment),
       duration_seconds: Number((segment.length / sampleRate).toFixed(2)),
       language_hint: languageHint || undefined,
+      release_after: true,
     }),
   });
 
