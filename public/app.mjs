@@ -7,6 +7,7 @@ import {
   fuseAudioEventNoise,
   hasStrongDistressEvidence,
   scoreCustomerCandidate,
+  detectSemanticOverlap,
 } from "/analysis-rules.mjs";
 import { analyzeAudioEvents } from "/yamnet-noise.mjs";
 
@@ -1282,7 +1283,9 @@ function buildToneCandidates(audioBuffer, mixedSamples) {
 }
 
 function measureChannelSpeechCollision(evaluatedCandidates) {
+  console.log("--- measureChannelSpeechCollision Debug ---", evaluatedCandidates.length);
   if (evaluatedCandidates.length !== 2) {
+    console.log("Candidates length !== 2. Channel collision unavailable.");
     return {
       available: false,
       overlapPresent: null,
@@ -1299,7 +1302,10 @@ function measureChannelSpeechCollision(evaluatedCandidates) {
   const firstMetrics = firstCandidate.toneAnalysis.metrics;
   const secondMetrics = secondCandidate.toneAnalysis.metrics;
 
+  console.log("Channel 1 frame count:", firstFrames.size, "| Channel 2 frame count:", secondFrames.size);
+
   if (!firstFrames.size || !secondFrames.size) {
+    console.log("One or both channels have 0 speech frames.");
     return {
       available: true,
       overlapPresent: false,
@@ -1353,6 +1359,18 @@ function measureChannelSpeechCollision(evaluatedCandidates) {
     !dominantBackgroundLike &&
     conversationalCollision &&
     (longestOverlapSeconds >= 0.35 || overlapSeconds >= 0.8);
+
+  console.log("Channel Speech Collision Metrics:", {
+    collisionFramesCount: collisionFrames.length,
+    overlapSeconds,
+    longestOverlapSeconds,
+    overlapRatio,
+    weakerSpeechRatio,
+    weakerSegmentDensity,
+    dominantBackgroundLike,
+    conversationalCollision,
+    overlapPresent
+  });
 
   return {
     available: true,
@@ -2189,10 +2207,18 @@ async function analyzeBatch() {
         evaluatedCandidates.sort((left, right) => right.customerScore - left.customerScore);
         const toneSelection = evaluatedCandidates[0];
         const toneAnalysis = toneSelection.toneAnalysis;
+        
         const channelCollision = measureChannelSpeechCollision(evaluatedCandidates);
-        const speakerOverlapPresent = channelCollision.available
-          ? channelCollision.overlapPresent
-          : technicalAnalysis.result.speaker_overlap_present;
+
+        const transcript = toneSelection.modelEvidence?.transcript || "";
+        console.log(`Evaluating file: ${entry.name} | Transcript:`, transcript);
+        const hasSemanticOverlap = detectSemanticOverlap(transcript);
+        
+        console.log(`File: ${entry.name} | channelAvailable:`, channelCollision.available, `| channelOverlap:`, channelCollision.overlapPresent, `| semanticOverlap:`, hasSemanticOverlap);
+
+        const speakerOverlapPresent = Boolean(
+          (channelCollision.available && channelCollision.overlapPresent) || hasSemanticOverlap
+        );
         const baselineResult = {
           ...technicalAnalysis.result,
           emotional_tone: toneAnalysis.result.emotional_tone,

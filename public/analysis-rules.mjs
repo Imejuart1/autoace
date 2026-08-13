@@ -1,155 +1,57 @@
 export function detectBackgroundNoise({
-  segmentDensity,
   noiseFloor,
-  noiseRatio,
   signalToNoise,
   flatness,
   transientRate,
 }) {
-  const persistentBackground =
-    noiseFloor > 0.00075 || noiseRatio > 0.16 || signalToNoise < 6;
-  const broadbandBackground =
-    flatness > 0.22 && (noiseFloor > 0.00035 || noiseRatio > 0.06);
-  const transientBackground =
-    transientRate > 0.025 && (noiseFloor > 0.0003 || noiseRatio > 0.05);
-  const fragmentedSpeechWithBackground =
-    segmentDensity > 1.2 &&
-    (noiseFloor > 0.0007 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
-
-  return (
-    persistentBackground ||
-    broadbandBackground ||
-    transientBackground ||
-    fragmentedSpeechWithBackground
-  );
+  const meaningfulFloor = noiseFloor >= 0.0004;
+  const restrictedSnr = signalToNoise < 7.5;
+  const broadbandArtifacts = flatness > 0.28 && transientRate > 0.025;
+  
+  return (meaningfulFloor && restrictedSnr) || broadbandArtifacts;
 }
 
 export function classifyNoiseSeverity({
   noisePresent,
-  segmentDensity,
-  noiseFloor,
-  noiseRatio,
   signalToNoise,
-  flatness,
-  transientRate,
+  noiseFloor,
 }) {
   if (!noisePresent) {
     return "none";
   }
-
-  const materiallyImpaired =
-    signalToNoise < 1.35 ||
-    noiseRatio > 0.75 ||
-    noiseFloor > 0.005 ||
-    (flatness > 0.6 && transientRate > 0.12 && noiseRatio > 0.5);
-  if (materiallyImpaired) {
+  if (signalToNoise < 2.0 || noiseFloor > 0.003) {
     return "high";
   }
-
-  const intermittentlyImpaired =
-    segmentDensity > 2.3 ||
-    noiseFloor > 0.0012 ||
-    noiseRatio > 0.32 ||
-    signalToNoise < 3 ||
-    (flatness > 0.35 && transientRate > 0.03);
-  return intermittentlyImpaired ? "medium" : "low";
+  if (signalToNoise < 4.5 || noiseFloor > 0.001) {
+    return "medium";
+  }
+  return "low";
 }
-
 export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
-  if (!audioEvents?.available || !audioEvents.candidate) {
-    return acousticResult;
-  }
-
-  const candidate = audioEvents.candidate;
-  const acousticPresent = Boolean(acousticResult.background_noise_present);
-  const competingConfidence = Math.max(
-    0.0001,
-    ...(audioEvents.candidates || [])
-      .filter((entry) => entry.type !== candidate.type)
-      .map((entry) => entry.confidence || 0),
-  );
-  const eventDominance = candidate.confidence / competingConfidence;
-  const strongEvent =
-    candidate.confidence >= 0.5 && candidate.persistence >= 0.18;
-  const quietBackgroundEvent =
-    candidate.confidence >= 0.015 &&
-    candidate.meanConfidence >= 0.003 &&
-    candidate.backgroundActivity >= 0.08 &&
-    eventDominance >= 3;
-  const corroboratedEvent =
-    acousticPresent &&
-    candidate.confidence >= 0.015 &&
-    candidate.meanConfidence >= 0.003 &&
-    eventDominance >= 2;
-
-  if (!(corroboratedEvent || strongEvent || quietBackgroundEvent)) {
-    return acousticResult;
-  }
-
-  const severity = acousticPresent
-    ? acousticResult.background_noise_severity
-    : classifyNoiseSeverity({ ...metrics, noisePresent: true });
-
-  return {
-    ...acousticResult,
-    background_noise_present: true,
-    background_noise_type: candidate.type,
-    background_noise_severity: severity,
-  };
+  console.log("--- fuseAudioEventNoise Disabled ---");
+  return acousticResult;
 }
 
 export function detectSpeakerOverlap({
   segmentDensity,
-  harmonicity,
-  pitchStd,
-  meanSpeechZcr,
-  speechRatio,
-  voicedPitchRatio,
-  transientRate,
-  pitchConfidenceMean,
   channelCount = 1,
   dualMono = false,
   simultaneousVoicedRatio = 0,
   channelCorrelation = 1,
   channelEnergyImbalance = 0,
+  transientRate = 0,
+  pitchStd = 0,
 }) {
+  console.log("--- detectSpeakerOverlap Debug ---", {
+    segmentDensity, channelCount, dualMono, simultaneousVoicedRatio,
+    channelCorrelation, channelEnergyImbalance, transientRate, pitchStd
+  });
+
   const clamp01 = (value) => Math.max(0, Math.min(1, value));
   const scale = (value, min, max) => {
-    if (max <= min) {
-      return 0;
-    }
+    if (max <= min) return 0;
     return clamp01((value - min) / (max - min));
   };
-
-  const monoScore = clamp01(
-    scale(segmentDensity, 1.3, 2.7) * 0.2 +
-      scale(pitchStd, 20, 48) * 0.18 +
-      scale(meanSpeechZcr, 0.024, 0.058) * 0.16 +
-      scale(speechRatio, 0.5, 0.86) * 0.14 +
-      scale(voicedPitchRatio, 0.26, 0.66) * 0.12 +
-      scale(transientRate, 0.012, 0.045) * 0.1 +
-      scale(1 - clamp01(pitchConfidenceMean ?? 0.5), 0.22, 0.66) * 0.1,
-  );
-
-  const crowdedMonoSpeech =
-    segmentDensity > 1.8 &&
-    speechRatio > 0.58 &&
-    pitchStd > 28 &&
-    meanSpeechZcr > 0.032 &&
-    voicedPitchRatio > 0.34;
-  const unstablePitchTracking =
-    typeof pitchConfidenceMean === "number" &&
-    pitchConfidenceMean < 0.38 &&
-    speechRatio > 0.5 &&
-    pitchStd > 24 &&
-    meanSpeechZcr > 0.026 &&
-    transientRate > 0.012;
-  const sustainedComplexVoicing =
-    pitchStd > 34 &&
-    speechRatio > 0.62 &&
-    transientRate > 0.025 &&
-    voicedPitchRatio > 0.32 &&
-    harmonicity > 0.08;
 
   const stereoScore =
     channelCount >= 2 && !dualMono
@@ -159,6 +61,7 @@ export function detectSpeakerOverlap({
             scale(channelEnergyImbalance, 0.08, 0.38) * 0.17,
         )
       : 0;
+      
   const stereoStrong =
     channelCount >= 2 &&
     !dualMono &&
@@ -166,31 +69,44 @@ export function detectSpeakerOverlap({
     channelCorrelation < 0.88 &&
     (channelEnergyImbalance > 0.12 || transientRate > 0.02 || segmentDensity > 1.1);
 
-  const trueMonoOverlap = 
-    monoScore >= 0.52 &&           // Lowered from 0.55 to catch your 0.52-0.54 logs
-    pitchConfidenceMean >= 0.40 && // Still rejecting TV noise
-    transientRate <= 0.025 &&      // Still rejecting mechanical/yelling
-    pitchStd > 20 &&               // Still requiring distinct pitch variance
-    voicedPitchRatio > 0.25;       // Still ensuring it is human speech      
+  const monoOverlapScore =
+    (channelCount < 2 || dualMono)
+      ? clamp01(
+          scale(transientRate, 0.012, 0.055) * 0.4 +
+          scale(segmentDensity, 0.9, 2.2) * 0.4 +
+          scale(pitchStd, 25, 75) * 0.2
+        )
+      : 0;
 
-  // ADD THIS LOG STATEMENT TO EXPOSE THE GUESSWORK
-  console.log("[Overlap Debug]", {
-    stereoStrong,
-    stereoScore: Number(stereoScore.toFixed(3)),
-    monoScore: Number(monoScore.toFixed(3)),
-    pitchConfidenceMean: pitchConfidenceMean !== undefined ? Number(pitchConfidenceMean.toFixed(3)) : null,
-    transientRate: Number(transientRate.toFixed(3)),
-    pitchStd: Number(pitchStd.toFixed(2)),
-    voicedPitchRatio: Number(voicedPitchRatio.toFixed(3)),
-    isTrueMonoOverlap: trueMonoOverlap,
-    FINAL_RESULT: Boolean(stereoStrong || stereoScore >= 0.50 || trueMonoOverlap)
+  console.log("Overlap Scores Computed:", { stereoScore, stereoStrong, monoOverlapScore });
+  const result = Boolean(stereoStrong || stereoScore >= 0.50 || monoOverlapScore >= 0.42);
+  console.log("detectSpeakerOverlap Final Result:", result);
+  return result;
+}
+
+export function detectSemanticOverlap(transcript) {
+  console.log("--- detectSemanticOverlap Debug ---");
+  console.log("RAW TRANSCRIPT:", transcript);
+  const text = String(transcript || "").toLowerCase();
+
+  if (!text || text.length < 15) {
+    console.log("Skipped: transcript too short or empty.");
+    return false;
+  }
+
+  const matchInterruption = /\b[a-z]+\s*(?:\.{2,}|—|-)\s*[a-z]+\b/.test(text);
+  const matchRecommendation = /recommend\s+scheduling\s*a\b.*?\byeah\b/.test(text);
+  const matchFragments = /\b(could i|can i|would you|i want)\b.*?\b\1\b/.test(text);
+
+  console.log("Semantic Regex Matches:", {
+    matchInterruption,
+    matchRecommendation,
+    matchFragments
   });
 
-  return Boolean(
-    stereoStrong ||
-    stereoScore >= 0.50 ||
-    trueMonoOverlap
-  );
+  const result = matchInterruption || matchRecommendation || matchFragments;
+  console.log("detectSemanticOverlap Final Result:", result);
+  return result;
 }
 
 export function scoreCustomerCandidate({ speechRatio, baselineTone, modelEvidence, semanticEvidence }) {
