@@ -129,6 +129,33 @@ async function readJsonResponse(response) {
   }
 }
 
+function formatErrorMessage(error, fallback = "Analysis failed.") {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const candidate =
+      error.error ||
+      error.message ||
+      error.detail ||
+      error.reason ||
+      error.name ||
+      "";
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 async function fetchSession() {
   const response = await fetch(AUTH_ENDPOINTS.me, {
     credentials: "include",
@@ -1471,11 +1498,11 @@ async function requestToneModel(segment, sampleRate, languageHint = "") {
   const payload = await readJsonResponse(response);
   if (response.status === 503) {
     state.toneModel.status = "unavailable";
-    state.toneModel.reason = payload?.error || payload?.detail || "Pretrained tone model is unavailable.";
+    state.toneModel.reason = formatErrorMessage(payload, "Pretrained tone model is unavailable.");
     return null;
   }
   if (!response.ok || !isToneModelResponse(payload)) {
-    throw new Error(payload?.error || payload?.detail || "Pretrained tone model returned an invalid response.");
+    throw new Error(formatErrorMessage(payload, "Pretrained tone model returned an invalid response."));
   }
 
   state.toneModel.status = "active";
@@ -2280,7 +2307,7 @@ async function analyzeBatch() {
         results.push({
           name: normalizeName(entry.name),
           status: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: formatErrorMessage(error),
           prediction: null,
           metrics: null,
           truth: manifestRow ? parseGroundTruthJson(manifestRow.result_json) : null,
