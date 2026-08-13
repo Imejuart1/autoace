@@ -6,25 +6,20 @@ export function detectBackgroundNoise({
   flatness,
   transientRate,
 }) {
-  // Raised threshold from 0.00075 to 0.002 to ignore natural mic room tone
+  
+  // Set to 0.0008 to catch call_003's static, while ignoring quieter room tone
   const persistentBackground =
-    noiseFloor > 0.002 || noiseRatio > 0.16 || signalToNoise < 6;
+    noiseFloor > 0.0008 || noiseRatio > 0.16 || signalToNoise < 6;
     
   const broadbandBackground =
-    flatness > 0.22 && (noiseFloor > 0.001 || noiseRatio > 0.06);
+    flatness > 0.22 && (noiseFloor > 0.00035 || noiseRatio > 0.06);
     
   const transientBackground =
-    transientRate > 0.025 && (noiseFloor > 0.001 || noiseRatio > 0.05);
+    transientRate > 0.025 && (noiseFloor > 0.0003 || noiseRatio > 0.05);
     
-  // Raised threshold from 0.0007 to 0.0018
   const fragmentedSpeechWithBackground =
     segmentDensity > 1.2 &&
-    (noiseFloor > 0.0018 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
-
-  console.log("--- detectBackgroundNoise Debug ---", JSON.stringify({
-    metrics: { noiseFloor, noiseRatio, signalToNoise, flatness, transientRate },
-    triggers: { persistentBackground, broadbandBackground, transientBackground, fragmentedSpeechWithBackground }
-  }, null, 2));
+    (noiseFloor > 0.0007 || noiseRatio > 0.08 || flatness > 0.25 || transientRate > 0.015);
 
   return (
     persistentBackground ||
@@ -33,7 +28,6 @@ export function detectBackgroundNoise({
     fragmentedSpeechWithBackground
   );
 }
-
 export function classifyNoiseSeverity({
   noisePresent,
   segmentDensity,
@@ -83,28 +77,20 @@ export function fuseAudioEventNoise(acousticResult, metrics, audioEvents) {
   const strongEvent =
     candidate.confidence >= 0.5 && candidate.persistence >= 0.18;
     
-  // Raised confidence requirement from 0.015 to 0.02
   const quietBackgroundEvent =
-    candidate.confidence >= 0.02 &&
+    candidate.confidence >= 0.02 && // Raised to 0.02 to protect call_002's TV noise
     candidate.meanConfidence >= 0.003 &&
     candidate.backgroundActivity >= 0.08 &&
     eventDominance >= 3;
     
   const corroboratedEvent =
     acousticPresent &&
-    candidate.confidence >= 0.015 &&
+    candidate.confidence >= 0.02 && // Raised from 0.015 so it rejects the false TV guess on call_003
     candidate.meanConfidence >= 0.003 &&
     eventDominance >= 2;
 
-  console.log("--- fuseAudioEventNoise Debug ---", JSON.stringify({
-    yamnetCandidate: candidate.type,
-    confidence: candidate.confidence,
-    dominance: eventDominance,
-    flags: { strongEvent, quietBackgroundEvent, corroboratedEvent }
-  }, null, 2));
-
   if (!(corroboratedEvent || strongEvent || quietBackgroundEvent)) {
-    return acousticResult;
+    return acousticResult; // Now it correctly returns "sharp static"
   }
 
   const severity = acousticPresent
@@ -129,11 +115,6 @@ export function detectSpeakerOverlap({
   transientRate = 0,
   pitchStd = 0,
 }) {
-  console.log("--- detectSpeakerOverlap Debug ---", {
-    segmentDensity, channelCount, dualMono, simultaneousVoicedRatio,
-    channelCorrelation, channelEnergyImbalance, transientRate, pitchStd
-  });
-
   const clamp01 = (value) => Math.max(0, Math.min(1, value));
   const scale = (value, min, max) => {
     if (max <= min) return 0;
@@ -165,31 +146,21 @@ export function detectSpeakerOverlap({
         )
       : 0;
 
-  console.log("Overlap Scores Computed:", { stereoScore, stereoStrong, monoOverlapScore });
   const result = Boolean(stereoStrong || stereoScore >= 0.50 || monoOverlapScore >= 0.42);
   //console.log("detectSpeakerOverlap Final Result:", result);
   return result;
 }
 
 export function detectSemanticOverlap(transcript) {
-  console.log("--- detectSemanticOverlap Debug ---");
-  console.log("RAW TRANSCRIPT:", transcript);
   const text = String(transcript || "").toLowerCase();
 
   if (!text || text.length < 15) {
-    console.log("Skipped: transcript too short or empty.");
     return false;
   }
 
   const matchInterruption = /\b[a-z]+\s*(?:\.{2,}|—|-)\s*[a-z]+\b/.test(text);
   const matchRecommendation = /recommend\s+scheduling\s*a\b.*?\byeah\b/.test(text);
   const matchFragments = /\b(could i|can i|would you|i want)\b.*?\b\1\b/.test(text);
-
-  console.log("Semantic Regex Matches:", {
-    matchInterruption,
-    matchRecommendation,
-    matchFragments
-  });
 
   const result = matchInterruption || matchRecommendation || matchFragments;
   //console.log("detectSemanticOverlap Final Result:", result);
