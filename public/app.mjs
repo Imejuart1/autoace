@@ -2070,6 +2070,42 @@ function manifestToMap(rows) {
   return map;
 }
 
+function orderAudioEntriesByManifest(audioEntries, manifestRows) {
+  if (!manifestRows.length) {
+    return audioEntries;
+  }
+
+  const entriesByName = new Map();
+  for (const entry of audioEntries) {
+    const key = normalizeName(entry.name).toLowerCase();
+    if (!entriesByName.has(key)) {
+      entriesByName.set(key, []);
+    }
+    entriesByName.get(key).push(entry);
+  }
+
+  const ordered = [];
+  const usedEntries = new Set();
+  for (const row of manifestRows) {
+    const matches = entriesByName.get(normalizeName(row.name).toLowerCase()) || [];
+    for (const entry of matches) {
+      if (!usedEntries.has(entry)) {
+        ordered.push(entry);
+        usedEntries.add(entry);
+        break;
+      }
+    }
+  }
+
+  for (const entry of audioEntries) {
+    if (!usedEntries.has(entry)) {
+      ordered.push(entry);
+    }
+  }
+
+  return ordered;
+}
+
 async function parseManifestFromFile(file) {
   if (!file || fileExtension(file.name) !== ".csv") {
     return [];
@@ -2129,7 +2165,7 @@ async function getBatchEntries() {
       }))
     : batchEntries.filter((entry) => isAudioFile(entry.file));
 
-  return { audioEntries, manifestRows, sourceFiles: manualFiles };
+  return { audioEntries: orderAudioEntriesByManifest(audioEntries, manifestRows), manifestRows, sourceFiles: manualFiles };
 }
 
 async function analyzeBatch() {
