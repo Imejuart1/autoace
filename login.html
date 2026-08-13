@@ -26,7 +26,18 @@
           </label>
           <label class="field">
             <span>Password</span>
-            <input id="loginPassword" type="password" autocomplete="current-password" required />
+            <span class="password-control">
+              <input id="loginPassword" type="password" autocomplete="current-password" required />
+              <button
+                id="togglePassword"
+                class="password-toggle"
+                type="button"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <span class="eye-icon" aria-hidden="true"></span>
+              </button>
+            </span>
           </label>
           <button type="submit" class="primary auth-submit">Sign in</button>
           <p id="loginMessage" class="login-message" role="status" aria-live="polite"></p>

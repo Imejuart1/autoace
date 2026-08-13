@@ -63,6 +63,7 @@ const dom = {
   loginForm: document.getElementById("loginForm"),
   loginUsername: document.getElementById("loginUsername"),
   loginPassword: document.getElementById("loginPassword"),
+  togglePassword: document.getElementById("togglePassword"),
   loginMessage: document.getElementById("loginMessage"),
   logoutButton: document.getElementById("logoutButton"),
   singleAudioInput: document.getElementById("singleAudioInput"),
@@ -211,7 +212,22 @@ function completeLogin() {
   clearState(true);
 }
 
+function initializePasswordToggle() {
+  if (!dom.togglePassword || !dom.loginPassword) {
+    return;
+  }
+
+  dom.togglePassword.addEventListener("click", () => {
+    const shouldShow = dom.loginPassword.type === "password";
+    dom.loginPassword.type = shouldShow ? "text" : "password";
+    dom.togglePassword.setAttribute("aria-pressed", String(shouldShow));
+    dom.togglePassword.setAttribute("aria-label", shouldShow ? "Hide password" : "Show password");
+  });
+}
+
 async function initializeAuth() {
+  initializePasswordToggle();
+
   if (dom.loginForm && !dom.appRoot) {
     dom.loginForm.addEventListener("submit", async (event) => {
       event.preventDefault();
